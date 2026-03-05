@@ -52,7 +52,7 @@ class AppState {
     
     /// Chemin fixe du JSON des meetings pour Alfred
     static var meetingsJSONPath: String {
-        let home = FileManager.default.homeDirectoryForCurrentUser
+        let home = URL(fileURLWithPath: "/tmp")
         return home.appendingPathComponent(".taskflowmac-meetings.json").path
     }
     
