@@ -132,17 +132,14 @@ struct MenuBarPopover: View {
     // MARK: - Meetings List
     
     private var meetingsList: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                ForEach(appState.meetings) { event in
-                    meetingRow(event: event)
-                    if event.id != appState.meetings.last?.id {
-                        Divider().padding(.leading, 16)
-                    }
+        VStack(spacing: 0) {
+            ForEach(appState.meetings) { event in
+                meetingRow(event: event)
+                if event.id != appState.meetings.last?.id {
+                    Divider().padding(.leading, 16)
                 }
             }
         }
-        .frame(maxHeight: min(CGFloat(appState.meetings.count) * 60 + 20, 500))
     }
     
     // MARK: - Meeting Row
