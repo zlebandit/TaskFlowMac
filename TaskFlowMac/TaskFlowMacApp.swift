@@ -16,6 +16,7 @@
 //  Au lancement :
 //    - Nettoyage des fichiers audio orphelins > 48h
 //    - Auto-recovery d'un enregistrement interrompu (crash/quit)
+//      → une seule fois, jamais pendant un enregistrement actif
 //
 
 import SwiftUI
@@ -23,6 +24,9 @@ import SwiftUI
 @main
 struct TaskFlowMacApp: App {
     @State private var appState = AppState()
+    
+    /// Flag pour ne vérifier la recovery qu'une seule fois
+    @State private var hasCheckedRecovery = false
     
     init() {
         // Nettoyage des fichiers orphelins > 48h au lancement
@@ -34,7 +38,9 @@ struct TaskFlowMacApp: App {
             MenuBarPopover()
                 .environment(appState)
                 .onAppear {
-                    checkForRecoveredRecording()
+                    // Recovery : une seule fois au tout premier affichage du popover
+                    // + jamais si un enregistrement est déjà actif
+                    checkForRecoveredRecordingOnce()
                 }
         } label: {
             menuBarLabel
@@ -72,10 +78,14 @@ struct TaskFlowMacApp: App {
         }
     }
     
-    // MARK: - Recovery
+    // MARK: - Recovery (une seule fois)
     
-    /// Vérifie au lancement si un enregistrement interrompu peut être récupéré
-    private func checkForRecoveredRecording() {
+    /// Vérifie une seule fois si un enregistrement interrompu peut être récupéré.
+    /// Ne fait rien si déjà vérifié, ou si un enregistrement est actif.
+    private func checkForRecoveredRecordingOnce() {
+        guard !hasCheckedRecovery else { return }
+        hasCheckedRecovery = true
+        
         guard let recovered = appState.checkForRecovery() else { return }
         
         print("🎙️ 🔄 Enregistrement récupéré trouvé: \(recovered.eventTitle)")

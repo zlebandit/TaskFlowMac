@@ -303,8 +303,15 @@ class AppState {
         let participantsJSON: String
     }
     
-    /// Vérifie si un enregistrement interrompu peut être récupéré
+    /// Vérifie si un enregistrement interrompu peut être récupéré.
+    /// Ne retourne rien si un enregistrement est actuellement en cours (évite de supprimer le fichier actif).
     func checkForRecovery() -> RecoveredRecording? {
+        // GUARD: ne pas interférer avec un enregistrement actif
+        guard !isRecording, recordingPhase == .idle else {
+            print("🎙️ ⏭ Recovery ignorée : enregistrement en cours")
+            return nil
+        }
+        
         let defaults = UserDefaults.standard
         guard defaults.bool(forKey: Self.kIsActive),
               let eventTitle = defaults.string(forKey: Self.kEventTitle),
