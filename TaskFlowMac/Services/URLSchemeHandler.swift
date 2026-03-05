@@ -105,7 +105,7 @@ class URLSchemeHandler {
     
     private func startAutoRecording() {
         guard let event = appState.ongoingMeeting ?? appState.nextMeeting else {
-            print("\u{1f399}\u{fe0f} \u{274c} Pas de réunion trouvée \u2192 enregistrement libre")
+            print("\u{1f399}\u{fe0f} \u{274c} Pas de réunion trouvée → enregistrement libre")
             startFreeRecording()
             return
         }
@@ -164,11 +164,11 @@ class URLSchemeHandler {
         guard let event = extractEvent(from: url) else { return }
         
         if appState.isRecording {
-            // En cours d'enregistrement \u2192 stop + assign direct
+            // En cours d'enregistrement → stop + assign direct
             appState.stopAndAssign(event)
             print("\u{1f399}\u{fe0f} \u{2705} Stop + assign: \(event.displayTitle)")
         } else if appState.recordingPhase == .picking {
-            // Déjà en picking \u2192 juste assigner
+            // Déjà en picking → juste assigner
             appState.assignEvent(event)
             print("\u{1f399}\u{fe0f} \u{2705} Assign (picking): \(event.displayTitle)")
         } else {
