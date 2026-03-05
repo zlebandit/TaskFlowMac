@@ -75,7 +75,6 @@ struct MenuBarPopover: View {
         .task {
             await loadMeetingsIfNeeded()
         }
-        .handleURLScheme()
     }
     
     // MARK: - Header

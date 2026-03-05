@@ -5,13 +5,16 @@
 //  Mini app menubar pour transcription automatique de réunions.
 //  Capture le micro du Mac (réunions en salle) via AVAudioEngine.
 //
-//  Pilotage via URL Scheme :
-//    taskflowmac://start   → démarre l'enregistrement du prochain RDV
-//    taskflowmac://stop    → arrête et envoie pour transcription
-//    taskflowmac://pause   → met en pause l'enregistrement
-//    taskflowmac://resume  → reprend l'enregistrement
+//  Pilotage via URL Scheme (géré par NSAppleEventManager dans URLSchemeHandler) :
+//    taskflowmac://record  → enregistrement libre
+//    taskflowmac://start   → enregistrement auto (réunion en cours/prochaine)
+//    taskflowmac://stop    → arrête l'enregistrement
 //    taskflowmac://toggle  → start/stop automatique
-//    taskflowmac://cancel  → annule l'enregistrement
+//    taskflowmac://pause   → met en pause
+//    taskflowmac://resume  → reprend
+//    taskflowmac://cancel  → annule
+//    taskflowmac://assign?id=X → assigne un événement après stop
+//    taskflowmac://meetings → écrit le JSON des réunions (pour Alfred)
 //
 //  Au lancement :
 //    - Nettoyage des fichiers audio orphelins > 48h
@@ -21,8 +24,19 @@
 
 import SwiftUI
 
+/// AppDelegate pour enregistrer le URL Scheme handler dès le lancement
+/// (NSAppleEventManager doit être configuré avant le premier événement)
+class AppDelegate: NSObject, NSApplicationDelegate {
+    var urlSchemeHandler: URLSchemeHandler?
+    
+    func setup(appState: AppState) {
+        urlSchemeHandler = URLSchemeHandler(appState: appState)
+    }
+}
+
 @main
 struct TaskFlowMacApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var appState = AppState()
     
     /// Flag pour ne vérifier la recovery qu'une seule fois
@@ -38,8 +52,11 @@ struct TaskFlowMacApp: App {
             MenuBarPopover()
                 .environment(appState)
                 .onAppear {
-                    // Recovery : une seule fois au tout premier affichage du popover
-                    // + jamais si un enregistrement est déjà actif
+                    // Configurer le URL scheme handler au premier affichage
+                    if appDelegate.urlSchemeHandler == nil {
+                        appDelegate.setup(appState: appState)
+                    }
+                    // Recovery : une seule fois
                     checkForRecoveredRecordingOnce()
                 }
         } label: {
@@ -56,7 +73,7 @@ struct TaskFlowMacApp: App {
     
     // MARK: - MenuBar Icon
     
-    /// Icône dynamique : micro normal, pulsant rouge si enregistrement, pause si en pause
+    /// Icône dynamique
     private var menuBarLabel: some View {
         Group {
             switch appState.recordingPhase {
@@ -72,6 +89,10 @@ struct TaskFlowMacApp: App {
                 Image(systemName: "arrow.up.circle.fill")
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(.blue, .blue)
+            case .picking:
+                Image(systemName: "checkmark.circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.green, .green)
             default:
                 Image(systemName: "waveform")
             }
@@ -80,8 +101,6 @@ struct TaskFlowMacApp: App {
     
     // MARK: - Recovery (une seule fois)
     
-    /// Vérifie une seule fois si un enregistrement interrompu peut être récupéré.
-    /// Ne fait rien si déjà vérifié, ou si un enregistrement est actif.
     private func checkForRecoveredRecordingOnce() {
         guard !hasCheckedRecovery else { return }
         hasCheckedRecovery = true
@@ -89,8 +108,6 @@ struct TaskFlowMacApp: App {
         guard let recovered = appState.checkForRecovery() else { return }
         
         print("🎙️ 🔄 Enregistrement récupéré trouvé: \(recovered.eventTitle)")
-        
-        // Auto-retry silencieux
         appState.retryRecoveredRecording(recovered)
     }
 }

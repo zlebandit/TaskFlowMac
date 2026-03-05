@@ -3,13 +3,12 @@
 //  TaskFlowMac
 //
 //  Gère les URL schemes pour piloter l'app depuis Alfred/raccourcis clavier.
+//  Utilise NSAppleEventManager (compatible MenuBarExtra, pas besoin de SwiftUI Lifecycle).
 //
 //  URL Schemes supportés :
 //    taskflowmac://record       → démarre un enregistrement libre (sans événement)
 //    taskflowmac://start        → démarre pour la réunion en cours/prochaine (mode auto)
 //    taskflowmac://stop         → arrête l'enregistrement
-//                                  - si événement associé → upload direct
-//                                  - sinon → passe en mode picking
 //    taskflowmac://toggle       → record si idle, stop si recording
 //    taskflowmac://pause        → met en pause l'enregistrement
 //    taskflowmac://resume       → reprend l'enregistrement
@@ -19,30 +18,43 @@
 //    taskflowmac://meetings     → écrit le JSON des réunions dans un fichier tmp (pour Alfred)
 //    taskflowmac://status       → log l'état actuel (debug)
 //
-//  Utilisation avec Alfred :
-//    Keyword "dr" → Open URL: taskflowmac://record
-//    Keyword "fr" → Script Filter qui appelle taskflowmac://meetings + affiche la liste
-//    Sélection dans Alfred → Open URL: taskflowmac://assign?id={query}
-//
 
-import SwiftUI
+import AppKit
+import Foundation
 
-struct URLSchemeModifier: ViewModifier {
-    @Environment(AppState.self) private var appState
+class URLSchemeHandler {
+    private let appState: AppState
     
-    func body(content: Content) -> some View {
-        content
-            .onOpenURL { url in
-                handleURL(url)
-            }
+    init(appState: AppState) {
+        self.appState = appState
+        
+        // Enregistrer le handler pour les URL schemes via NSAppleEventManager
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleURLEvent(_:withReply:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+        print("\u{1f399}\u{fe0f} URL Scheme handler enregistré")
     }
     
-    private func handleURL(_ url: URL) {
-        guard url.scheme == Config.urlScheme else { return }
+    @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
+        guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              let url = URL(string: urlString) else {
+            print("\u{1f399}\u{fe0f} \u{274c} URL invalide")
+            return
+        }
         
         let command = url.host ?? ""
         print("\u{1f399}\u{fe0f} URL Scheme: \(command)")
         
+        // Dispatcher sur le main thread
+        DispatchQueue.main.async { [self] in
+            self.handleCommand(command, url: url)
+        }
+    }
+    
+    private func handleCommand(_ command: String, url: URL) {
         switch command {
         case "record":
             startFreeRecording()
@@ -81,30 +93,25 @@ struct URLSchemeModifier: ViewModifier {
     
     // MARK: - Recording
     
-    /// Démarre un enregistrement libre (sans événement)
     private func startFreeRecording() {
         guard !appState.isRecording else {
             print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} Déjà en cours d'enregistrement")
             return
         }
-        
         appState.startRecording()
         print("\u{1f399}\u{fe0f} \u{2705} Enregistrement libre démarré")
     }
     
-    /// Démarre un enregistrement associé à la réunion en cours/prochaine
     private func startAutoRecording() {
         guard let event = appState.ongoingMeeting ?? appState.nextMeeting else {
             print("\u{1f399}\u{fe0f} \u{274c} Pas de réunion trouvée → enregistrement libre")
             startFreeRecording()
             return
         }
-        
         guard !appState.isRecording else {
             print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} Déjà en cours d'enregistrement")
             return
         }
-        
         appState.startRecording(for: event)
         print("\u{1f399}\u{fe0f} \u{2705} Enregistrement démarré pour: \(event.displayTitle)")
     }
@@ -114,7 +121,6 @@ struct URLSchemeModifier: ViewModifier {
             print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} Pas d'enregistrement en cours")
             return
         }
-        
         appState.stopRecording()
         print("\u{1f399}\u{fe0f} \u{23f9} Enregistrement arrêté")
     }
@@ -139,33 +145,26 @@ struct URLSchemeModifier: ViewModifier {
     
     // MARK: - Assign Event (picking)
     
-    /// Assigne un événement au fichier en attente via URL scheme
-    /// URL: taskflowmac://assign?id=NOTION_PAGE_ID
     private func assignEvent(from url: URL) {
         guard appState.recordingPhase == .picking else {
             print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} assign appelé hors phase picking")
             return
         }
-        
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let eventId = components.queryItems?.first(where: { $0.name == "id" })?.value else {
             print("\u{1f399}\u{fe0f} \u{274c} assign: paramètre id manquant")
             return
         }
-        
         guard let event = appState.meetings.first(where: { $0.id == eventId }) else {
             print("\u{1f399}\u{fe0f} \u{274c} assign: événement \(eventId) non trouvé")
             return
         }
-        
         appState.assignEvent(event)
         print("\u{1f399}\u{fe0f} \u{2705} Enregistrement assigné à: \(event.displayTitle)")
     }
     
     // MARK: - Meetings JSON (pour Alfred Script Filter)
     
-    /// Écrit le JSON des réunions du jour dans un fichier temporaire
-    /// Alfred peut le lire ensuite pour afficher la liste
     private func writeMeetingsJSON() {
         let json = appState.meetingsJSON
         let tmpFile = FileManager.default.temporaryDirectory
@@ -177,16 +176,10 @@ struct URLSchemeModifier: ViewModifier {
     // MARK: - Status
     
     private func printStatus() {
-        print("\u{1f399}\u{fe0f} 📊 État: \(appState.recordingPhase)")
-        print("\u{1f399}\u{fe0f} 📊 Réunion: \(appState.recordingEvent?.displayTitle ?? "aucune (libre)")")
-        print("\u{1f399}\u{fe0f} 📊 Durée: \(appState.formattedDuration)")
-        print("\u{1f399}\u{fe0f} 📊 Meetings: \(appState.meetings.count)")
-        print("\u{1f399}\u{fe0f} 📊 Audio finalisé: \(appState.finalizedAudioURL?.lastPathComponent ?? "aucun")")
-    }
-}
-
-extension View {
-    func handleURLScheme() -> some View {
-        modifier(URLSchemeModifier())
+        print("\u{1f399}\u{fe0f} \u{1f4ca} État: \(appState.recordingPhase)")
+        print("\u{1f399}\u{fe0f} \u{1f4ca} Réunion: \(appState.recordingEvent?.displayTitle ?? "aucune (libre)")")
+        print("\u{1f399}\u{fe0f} \u{1f4ca} Durée: \(appState.formattedDuration)")
+        print("\u{1f399}\u{fe0f} \u{1f4ca} Meetings: \(appState.meetings.count)")
+        print("\u{1f399}\u{fe0f} \u{1f4ca} Audio finalisé: \(appState.finalizedAudioURL?.lastPathComponent ?? "aucun")")
     }
 }
