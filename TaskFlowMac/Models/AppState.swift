@@ -28,7 +28,10 @@ class AppState {
     
     /// Réunions du jour (depuis /taskflow-sync)
     var meetings: [CalendarEvent] = [] {
-        didSet { saveCacheToDisk() }
+        didSet {
+            saveCacheToDisk()
+            writeMeetingsJSONFile()
+        }
     }
     
     /// Dernière sync
@@ -47,6 +50,12 @@ class AppState {
     
     private static let cacheKey = "cachedMeetings"
     
+    /// Chemin fixe du JSON des meetings pour Alfred
+    static var meetingsJSONPath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent(".taskflowmac-meetings.json").path
+    }
+    
     init() {
         // Restore cache on launch
         lastSyncDate = UserDefaults.standard.object(forKey: "lastSyncDate") as? Date
@@ -62,6 +71,14 @@ class AppState {
         if let data = try? JSONEncoder().encode(meetings) {
             UserDefaults.standard.set(data, forKey: Self.cacheKey)
         }
+    }
+    
+    /// Écrit le JSON des meetings au format Alfred Script Filter dans un fichier fixe
+    /// Ce fichier est lu par le script Alfred "fr" pour afficher la liste des réunions
+    private func writeMeetingsJSONFile() {
+        let json = meetingsJSON
+        let path = Self.meetingsJSONPath
+        try? json.write(toFile: path, atomically: true, encoding: .utf8)
     }
     
     // MARK: - Recording State
@@ -140,13 +157,13 @@ class AppState {
         return String(format: "%02d:%02d", m, s)
     }
     
-    /// JSON des réunions du jour (pour Alfred Script Filter)
+    /// JSON des réunions du jour au format Alfred Script Filter
     var meetingsJSON: String {
         let items = meetings.map { event -> [String: Any] in
             [
                 "uid": event.id,
                 "title": event.displayTitle,
-                "subtitle": event.timeRange + (event.Lieu.map { " — \($0)" } ?? ""),
+                "subtitle": event.timeRange + (event.Lieu.map { " \u2014 \($0)" } ?? ""),
                 "arg": event.id,
                 "icon": ["path": "icon.png"]
             ]
@@ -270,6 +287,29 @@ class AppState {
                 }
             }
         }
+    }
+    
+    /// Stop + Assign en une seule commande (pour Alfred fr)
+    /// Arrête l'enregistrement et assigne immédiatement l'événement
+    func stopAndAssign(_ event: CalendarEvent) {
+        guard isRecording else {
+            // Si déjà en picking, juste assigner
+            if recordingPhase == .picking {
+                assignEvent(event)
+            }
+            return
+        }
+        
+        stopTimer()
+        recordingEndDate = ISO8601DateFormatter().string(from: Date())
+        UserDefaults.standard.set(recordingEndDate, forKey: "recording.endDate")
+        
+        // Assigner l'événement et uploader directement
+        recordingEvent = event
+        recordingPhase = .uploading
+        persistParticipants(event: event)
+        persistRecordingState(event: event)
+        finalizeAndUpload(event: event)
     }
     
     /// Assigne un événement au fichier audio finalisé et lance l'upload

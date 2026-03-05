@@ -1,27 +1,15 @@
 #!/bin/bash
 # Alfred Script Filter pour "fr" (fin de réunion)
-# 1. Stoppe l'enregistrement en cours via URL scheme
-# 2. Déclenche l'écriture du JSON des meetings
-# 3. Lit le fichier JSON et l'affiche dans Alfred
+#
+# Lit le fichier JSON des réunions (maintenu par l'app à chaque sync)
+# et l'affiche dans Alfred. La sélection déclenchera stopassign.
+#
+# L'app écrit ~/.taskflowmac-meetings.json à chaque sync automatiquement.
 
-# Stopper l'enregistrement + écrire le JSON des meetings
-open "taskflowmac://stop"
-open "taskflowmac://meetings"
+JSON_FILE="$HOME/.taskflowmac-meetings.json"
 
-# Attendre que l'app écrive le fichier (max 1s)
-JSON_FILE="$TMPDIR/taskflowmac-meetings.json"
-for i in $(seq 1 10); do
-    if [ -f "$JSON_FILE" ] && [ "$(stat -f%m "$JSON_FILE")" -gt "$(($(date +%s) - 2))" ]; then
-        break
-    fi
-    sleep 0.1
-done
-
-# Lire et afficher le JSON
 if [ -f "$JSON_FILE" ]; then
     cat "$JSON_FILE"
 else
-    cat << 'EOF'
-{"items": [{"uid": "error", "title": "Aucune réunion disponible", "subtitle": "L'app n'a pas répondu. Vérifie qu'elle est lancée.", "valid": false}]}
-EOF
+    echo '{"items": [{"uid": "error", "title": "Aucune r\u00e9union disponible", "subtitle": "L'\''app n'\''a pas encore sync. Ouvre le popover une fois.", "valid": false}]}'
 fi
