@@ -63,6 +63,8 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
     private var writerIsReady = false
     private var sampleCount = 0
     private var appendFailCount = 0
+    private var totalFrameCount: Int64 = 0
+    private var nonSilentSampleCount = 0
     
     /// Queue dédiée pour recevoir les samples audio
     private let audioQueue = DispatchQueue(label: "com.taskflowmac.audiocapture", qos: .userInitiated)
@@ -134,6 +136,8 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         self.writerIsReady = false
         self.sampleCount = 0
         self.appendFailCount = 0
+        self.totalFrameCount = 0
+        self.nonSilentSampleCount = 0
         
         try await scStream.startCapture()
         
@@ -154,7 +158,8 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         self.streamOutput = nil
         self.isCapturing = false
         
-        print("🎙️ Stream arrêté. Samples audio reçus: \(sampleCount), appends failed: \(appendFailCount)")
+        let durationSec = Double(totalFrameCount) / 48000.0
+        print("🎙️ Stream arrêté. Samples: \(sampleCount), frames: \(totalFrameCount) (~\(Int(durationSec))s), non-silence: \(nonSilentSampleCount)/\(sampleCount), appends failed: \(appendFailCount)")
         
         // 2. Finaliser l'écriture du fichier
         guard let writer = assetWriter else {
@@ -342,11 +347,37 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
             return
         }
         
+        // Mesurer le niveau audio pour diagnostic
+        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        totalFrameCount += Int64(frameCount)
+        
+        // Vérifier si le buffer contient du vrai audio (pas du silence)
+        if let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) {
+            var lengthAtOffset: Int = 0
+            var totalLength: Int = 0
+            var dataPointer: UnsafeMutablePointer<Int8>?
+            let status = CMBlockBufferGetDataPointer(dataBuffer, atOffset: 0, lengthAtOffsetOut: &lengthAtOffset, totalLengthOut: &totalLength, dataPointerOut: &dataPointer)
+            if status == noErr, let ptr = dataPointer, totalLength > 0 {
+                // Les samples sont en Float32 (LPCM) — calculer le max absolu
+                let floatPtr = UnsafeRawPointer(ptr).bindMemory(to: Float32.self, capacity: totalLength / 4)
+                let floatCount = totalLength / 4
+                var maxAbs: Float32 = 0
+                for i in 0..<min(floatCount, 1024) {
+                    let absVal = abs(floatPtr[i])
+                    if absVal > maxAbs { maxAbs = absVal }
+                }
+                if maxAbs > 0.001 { // Seuil au-dessus du bruit de fond
+                    nonSilentSampleCount += 1
+                }
+            }
+        }
+        
         // Écrire le sample
         if input.append(sampleBuffer) {
             sampleCount += 1
             if sampleCount % 500 == 0 {
-                print("🎙️ 📝 \(sampleCount) samples audio écrits")
+                let durationSec = Double(totalFrameCount) / 48000.0
+                print("🎙️ 📝 \(sampleCount) samples (\(totalFrameCount) frames, ~\(Int(durationSec))s) — audio non-silence: \(nonSilentSampleCount)/\(sampleCount)")
             }
         } else {
             appendFailCount += 1
