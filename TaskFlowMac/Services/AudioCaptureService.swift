@@ -26,6 +26,8 @@ enum AudioCaptureError: LocalizedError {
     case writerFailed(String)
     case notRecording
     case alreadyRecording
+    case noAudioCaptured
+    case permissionDenied
     
     var errorDescription: String? {
         switch self {
@@ -35,6 +37,8 @@ enum AudioCaptureError: LocalizedError {
         case .writerFailed(let msg): return "Erreur écriture audio: \(msg)"
         case .notRecording: return "Aucun enregistrement en cours"
         case .alreadyRecording: return "Un enregistrement est déjà en cours"
+        case .noAudioCaptured: return "Aucun audio capturé. Vérifie que du son système est en cours (Teams/Zoom/Meet) et que la permission Screen Recording est accordée."
+        case .permissionDenied: return "Permission Screen Recording requise. Va dans Préférences Système > Confidentialité > Enregistrement de l'écran et autorise TaskFlowMac, puis relance l'app."
         }
     }
 }
@@ -45,11 +49,13 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
     // MARK: - State
     
     private var stream: SCStream?
+    private var streamOutput: AudioStreamOutput?
     private var assetWriter: AVAssetWriter?
     private var audioInput: AVAssetWriterInput?
     private var outputURL: URL?
     private var isCapturing = false
     private var hasReceivedFirstSample = false
+    private var sampleCount = 0
     
     /// Queue dédiée pour recevoir les samples audio
     private let audioQueue = DispatchQueue(label: "com.taskflowmac.audiocapture", qos: .userInitiated)
@@ -61,12 +67,22 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
     func startCapture() async throws -> URL {
         guard !isCapturing else { throw AudioCaptureError.alreadyRecording }
         
-        // 1. Récupérer le contenu partageable (displays, apps, windows)
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        // 1. Vérifier la permission Screen Recording
+        // SCShareableContent.excludingDesktopWindows lance une erreur si pas autorisé
+        let content: SCShareableContent
+        do {
+            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            print("🎙️ Permission OK — \(content.displays.count) display(s), \(content.applications.count) app(s)")
+        } catch {
+            print("🎙️ ❌ Permission Screen Recording refusée: \(error.localizedDescription)")
+            throw AudioCaptureError.permissionDenied
+        }
         
         guard let display = content.displays.first else {
             throw AudioCaptureError.noDisplayFound
         }
+        
+        print("🎙️ Display: \(display.width)x\(display.height)")
         
         // 2. Créer le filtre de contenu — display entier pour capturer tout l'audio système
         let filter = SCContentFilter(display: display, excludingWindows: [])
@@ -95,14 +111,20 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         try setupAssetWriter(outputURL: fileURL)
         
         // 6. Créer et démarrer le stream
-        let streamOutput = AudioStreamOutput(service: self)
-        let scStream = SCStream(filter: filter, configuration: config, delegate: streamOutput)
+        // On garde une référence forte vers le streamOutput pour éviter qu'il soit libéré
+        let output = AudioStreamOutput(service: self)
+        self.streamOutput = output
         
-        try scStream.addStreamOutput(streamOutput, type: .audio, sampleHandlerQueue: audioQueue)
+        let scStream = SCStream(filter: filter, configuration: config, delegate: output)
+        
+        // Ajouter les outputs — audio ET screen (screen est obligatoire pour que l'audio fonctionne)
+        try scStream.addStreamOutput(output, type: .screen, sampleHandlerQueue: audioQueue)
+        try scStream.addStreamOutput(output, type: .audio, sampleHandlerQueue: audioQueue)
         
         self.stream = scStream
         self.isCapturing = true
         self.hasReceivedFirstSample = false
+        self.sampleCount = 0
         
         try await scStream.startCapture()
         
@@ -120,11 +142,30 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         // 1. Arrêter le stream ScreenCaptureKit
         try await stream.stopCapture()
         self.stream = nil
+        self.streamOutput = nil
         self.isCapturing = false
+        
+        print("🎙️ Stream arrêté. Samples audio reçus: \(sampleCount)")
         
         // 2. Finaliser l'écriture du fichier
         guard let writer = assetWriter else {
             throw AudioCaptureError.writerFailed("No asset writer")
+        }
+        
+        // Si aucun sample n'a été reçu, on ne peut pas finaliser le writer
+        if !hasReceivedFirstSample {
+            print("🎙️ ⚠️ Aucun sample audio reçu — annulation du writer")
+            audioInput?.markAsFinished()
+            writer.cancelWriting()
+            self.assetWriter = nil
+            self.audioInput = nil
+            
+            // Supprimer le fichier vide
+            if let url = outputURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+            
+            throw AudioCaptureError.noAudioCaptured
         }
         
         audioInput?.markAsFinished()
@@ -137,6 +178,7 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         
         guard writer.status == .completed else {
             let errorMsg = writer.error?.localizedDescription ?? "Unknown error"
+            print("🎙️ ❌ Writer status: \(writer.status.rawValue), error: \(errorMsg)")
             throw AudioCaptureError.writerFailed(errorMsg)
         }
         
@@ -151,7 +193,14 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         // Vérifier la taille du fichier
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         let fileSize = attrs[.size] as? Int64 ?? 0
-        print("🎙️ ✅ Fichier audio finalisé: \(url.lastPathComponent) (\(fileSize / 1024) KB)")
+        print("🎙️ ✅ Fichier audio finalisé: \(url.lastPathComponent) (\(fileSize / 1024) KB, \(sampleCount) samples)")
+        
+        // Fichier trop petit = probablement pas d'audio réel
+        if fileSize < 1024 {
+            print("🎙️ ⚠️ Fichier audio trop petit (\(fileSize) bytes) — probablement pas d'audio capturé")
+            try? FileManager.default.removeItem(at: url)
+            throw AudioCaptureError.noAudioCaptured
+        }
         
         return url
     }
@@ -162,6 +211,7 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
             try? await stream.stopCapture()
         }
         stream = nil
+        streamOutput = nil
         isCapturing = false
         
         audioInput?.markAsFinished()
@@ -175,7 +225,7 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         }
         outputURL = nil
         
-        print("🎙️ ⚠️ Capture annulée")
+        print("🎙️ ⚠️ Capture annulée (\(sampleCount) samples reçus)")
     }
     
     // MARK: - Private
@@ -224,6 +274,8 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
             throw AudioCaptureError.writerSetupFailed(errorMsg)
         }
         
+        print("🎙️ AVAssetWriter prêt (AAC 44.1kHz stéréo 128kbps)")
+        
         self.assetWriter = writer
         self.audioInput = input
     }
@@ -232,9 +284,20 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
     fileprivate func handleAudioSample(_ sampleBuffer: CMSampleBuffer) {
         guard isCapturing,
               let writer = assetWriter,
-              let input = audioInput,
-              writer.status == .writing,
-              input.isReadyForMoreMediaData else {
+              let input = audioInput else {
+            return
+        }
+        
+        // Vérifier le status du writer
+        guard writer.status == .writing else {
+            if writer.status == .failed {
+                print("🎙️ ❌ Writer failed: \(writer.error?.localizedDescription ?? "unknown")")
+            }
+            return
+        }
+        
+        guard input.isReadyForMoreMediaData else {
+            // Le writer n'est pas prêt, on skip ce sample
             return
         }
         
@@ -243,10 +306,34 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
             let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             writer.startSession(atSourceTime: pts)
             hasReceivedFirstSample = true
-            print("🎙️ Premier sample audio reçu")
+            
+            // Log le format audio reçu
+            if let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
+               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) {
+                print("🎙️ 🎵 Premier sample audio reçu — Format: \(asbd.pointee.mFormatID) \(asbd.pointee.mSampleRate)Hz \(asbd.pointee.mChannelsPerFrame)ch \(asbd.pointee.mBitsPerChannel)bit")
+            } else {
+                print("🎙️ 🎵 Premier sample audio reçu (format inconnu)")
+            }
         }
         
-        input.append(sampleBuffer)
+        // Écrire le sample
+        if input.append(sampleBuffer) {
+            sampleCount += 1
+            // Log périodique
+            if sampleCount % 500 == 0 {
+                print("🎙️ 📝 \(sampleCount) samples audio écrits")
+            }
+        } else {
+            print("🎙️ ⚠️ Échec append sample #\(sampleCount + 1) — writer status: \(writer.status.rawValue)")
+        }
+    }
+    
+    /// Appelée par AudioStreamOutput quand un sample vidéo arrive (ignoré)
+    fileprivate func handleScreenSample(_ sampleBuffer: CMSampleBuffer) {
+        // On ignore la vidéo, mais on log le premier pour confirmer que le stream fonctionne
+        if sampleCount == 0 && !hasReceivedFirstSample {
+            print("🎙️ 📺 Sample vidéo reçu (stream actif, en attente d'audio...)")
+        }
     }
 }
 
@@ -255,7 +342,8 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
 /// Classe séparée pour recevoir les callbacks du stream
 private class AudioStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate {
     
-    weak var service: AudioCaptureService?
+    // Référence forte (pas weak) — le service est owner, pas de cycle car le service contrôle la durée de vie
+    let service: AudioCaptureService
     
     init(service: AudioCaptureService) {
         self.service = service
@@ -263,9 +351,14 @@ private class AudioStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate {
     
     // SCStreamOutput — reçoit les sample buffers
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        // On ne traite que l'audio, on ignore la vidéo
-        guard type == .audio else { return }
-        service?.handleAudioSample(sampleBuffer)
+        switch type {
+        case .audio:
+            service.handleAudioSample(sampleBuffer)
+        case .screen:
+            service.handleScreenSample(sampleBuffer)
+        @unknown default:
+            break
+        }
     }
     
     // SCStreamDelegate — gestion des erreurs

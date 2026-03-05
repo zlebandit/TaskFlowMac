@@ -166,6 +166,10 @@ class AppState {
                 // 4. Marquer comme terminé
                 markDone()
                 
+            } catch is AudioCaptureError {
+                // Erreur de capture (noAudioCaptured, permissionDenied, etc.)
+                print("🎙️ ⚠️ Erreur capture: \(error.localizedDescription)")
+                markError(error.localizedDescription)
             } catch {
                 print("🎙️ ❌ Erreur stop/upload: \(error.localizedDescription)")
                 markError(error.localizedDescription)
