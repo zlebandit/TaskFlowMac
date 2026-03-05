@@ -15,7 +15,7 @@
 	</array>
 	<key>LSUIElement</key>
 	<true/>
-	<key>NSScreenCaptureUsageDescription</key>
-	<string>TaskFlowMac a besoin d'accéder à l'enregistrement d'écran pour capturer l'audio système des visioconférences (Teams, Zoom, Meet) et le transcrire automatiquement.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>TaskFlowMac a besoin d'accéder au microphone pour enregistrer les réunions en salle et les transcrire automatiquement.</string>
 </dict>
 </plist>
