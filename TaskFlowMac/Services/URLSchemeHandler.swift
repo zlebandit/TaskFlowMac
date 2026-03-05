@@ -8,7 +8,11 @@
 //    taskflowmac://start   → démarre l'enregistrement (réunion en cours ou prochaine)
 //    taskflowmac://stop    → arrête l'enregistrement et lance la transcription
 //    taskflowmac://toggle  → start si idle, stop si recording
+//    taskflowmac://pause   → met en pause l'enregistrement
+//    taskflowmac://resume  → reprend l'enregistrement après pause
+//    taskflowmac://pausetoggle → pause si recording, resume si paused
 //    taskflowmac://cancel  → annule l'enregistrement en cours
+//    taskflowmac://status  → log l'état actuel (debug)
 //
 //  Utilisation avec Alfred :
 //    Créer un workflow avec un Hotkey trigger → Open URL action
@@ -45,8 +49,20 @@ struct URLSchemeModifier: ViewModifier {
             } else {
                 startRecording()
             }
+        case "pause":
+            pauseRecording()
+        case "resume":
+            resumeRecording()
+        case "pausetoggle":
+            if appState.recordingPhase == .paused {
+                resumeRecording()
+            } else if appState.recordingPhase == .recording {
+                pauseRecording()
+            }
         case "cancel":
             cancelRecording()
+        case "status":
+            printStatus()
         default:
             print("\u{1f399}\u{fe0f} Unknown URL command: \(command)")
         }
@@ -64,7 +80,6 @@ struct URLSchemeModifier: ViewModifier {
             return
         }
         
-        // Démarre la capture audio réelle via ScreenCaptureKit
         appState.startRecording(for: event)
         print("\u{1f399}\u{fe0f} \u{2705} Enregistrement démarré pour: \(event.displayTitle)")
     }
@@ -75,9 +90,28 @@ struct URLSchemeModifier: ViewModifier {
             return
         }
         
-        // Arrête la capture + upload vers n8n
         appState.stopRecording()
         print("\u{1f399}\u{fe0f} \u{23f9} Enregistrement arrêté → upload en cours")
+    }
+    
+    private func pauseRecording() {
+        guard appState.recordingPhase == .recording else {
+            print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} Pas en cours d'enregistrement actif")
+            return
+        }
+        
+        appState.pauseRecording()
+        print("\u{1f399}\u{fe0f} \u{23f8} Enregistrement en pause")
+    }
+    
+    private func resumeRecording() {
+        guard appState.recordingPhase == .paused else {
+            print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} L'enregistrement n'est pas en pause")
+            return
+        }
+        
+        appState.resumeRecording()
+        print("\u{1f399}\u{fe0f} \u{25b6}\u{fe0f} Enregistrement repris")
     }
     
     private func cancelRecording() {
@@ -88,6 +122,13 @@ struct URLSchemeModifier: ViewModifier {
         
         appState.cancelRecording()
         print("\u{1f399}\u{fe0f} \u{1f5d1}\u{fe0f} Enregistrement annulé")
+    }
+    
+    private func printStatus() {
+        print("\u{1f399}\u{fe0f} 📊 État: \(appState.recordingPhase)")
+        print("\u{1f399}\u{fe0f} 📊 Réunion: \(appState.recordingEvent?.displayTitle ?? "aucune")")
+        print("\u{1f399}\u{fe0f} 📊 Durée: \(appState.formattedDuration)")
+        print("\u{1f399}\u{fe0f} 📊 Meetings: \(appState.meetings.count)")
     }
 }
 

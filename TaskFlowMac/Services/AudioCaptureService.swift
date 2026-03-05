@@ -10,6 +10,11 @@
 //    2. AVAssetWriter → encode les PCM buffers en fichier M4A (AAC)
 //    3. stopCapture() → finalise le fichier et retourne l'URL
 //
+//  Fonctionnalités :
+//    - Pause / Resume (met en pause l'engine, les timestamps continuent)
+//    - Nettoyage automatique des fichiers orphelins > 48h au lancement
+//    - Stockage dans Documents/TaskFlowMacRecordings/ (persistant)
+//
 //  Permissions requises :
 //    - Microphone (NSMicrophoneUsageDescription dans Info.plist)
 //    - com.apple.security.device.audio-input dans entitlements
@@ -28,6 +33,7 @@ enum AudioCaptureError: LocalizedError {
     case noAudioCaptured
     case microphonePermissionDenied
     case noInputDevice
+    case notPaused
     
     var errorDescription: String? {
         switch self {
@@ -38,6 +44,7 @@ enum AudioCaptureError: LocalizedError {
         case .noAudioCaptured: return "Aucun audio capturé. Vérifie que le micro est accessible."
         case .microphonePermissionDenied: return "Permission Microphone requise. Va dans Préférences Système > Confidentialité > Microphone et autorise TaskFlowMac, puis relance l'app."
         case .noInputDevice: return "Aucun périphérique d'entrée audio trouvé."
+        case .notPaused: return "L'enregistrement n'est pas en pause."
         }
     }
 }
@@ -50,15 +57,16 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
     private var audioEngine: AVAudioEngine?
     private var assetWriter: AVAssetWriter?
     private var audioInput: AVAssetWriterInput?
-    private var outputURL: URL?
-    private var isCapturing = false
+    private(set) var outputURL: URL?
+    private(set) var isCapturing = false
+    private(set) var isPaused = false
     private var sampleCount = 0
     private var totalFrameCount: Int64 = 0
     private var nonSilentBufferCount = 0
     private var startTime: Date?
-    
-    /// Queue dédiée pour l'écriture audio
-    private let writeQueue = DispatchQueue(label: "com.taskflowmac.audiowrite", qos: .userInitiated)
+    private var pauseAccumulated: TimeInterval = 0
+    private var pauseStartTime: Date?
+    private var inputFormat: AVAudioFormat?
     
     // MARK: - Public API
     
@@ -84,37 +92,38 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         // 2. Configurer AVAudioEngine
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
+        let format = inputNode.outputFormat(forBus: 0)
         
-        guard inputFormat.sampleRate > 0 && inputFormat.channelCount > 0 else {
+        guard format.sampleRate > 0 && format.channelCount > 0 else {
             print("🎙️ ❌ Aucun périphérique d'entrée audio détecté")
             throw AudioCaptureError.noInputDevice
         }
         
-        let sampleRate = inputFormat.sampleRate
-        let channelCount = inputFormat.channelCount
-        print("🎙️ 🎵 Micro détecté: \(sampleRate) Hz, \(channelCount) ch")
+        self.inputFormat = format
+        print("🎙️ 🎵 Micro détecté: \(format.sampleRate) Hz, \(format.channelCount) ch")
         
         // 3. Préparer le fichier de sortie M4A
         let fileURL = try prepareOutputFile()
         self.outputURL = fileURL
         
         // 4. Configurer AVAssetWriter avec AAC
-        try setupAssetWriter(outputURL: fileURL, sampleRate: sampleRate, channelCount: channelCount)
+        try setupAssetWriter(outputURL: fileURL, sampleRate: format.sampleRate, channelCount: format.channelCount)
         
         // 5. Reset compteurs
         self.sampleCount = 0
         self.totalFrameCount = 0
         self.nonSilentBufferCount = 0
         self.startTime = Date()
+        self.pauseAccumulated = 0
+        self.pauseStartTime = nil
         self.isCapturing = true
+        self.isPaused = false
         self.audioEngine = engine
         
         // 6. Installer le tap sur l'input node
-        // Utiliser un buffer size de 4096 frames (~85ms à 48kHz)
         let bufferSize: AVAudioFrameCount = 4096
         
-        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { [weak self] (buffer, time) in
+        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: format) { [weak self] (buffer, time) in
             self?.handleAudioBuffer(buffer, time: time)
         }
         
@@ -125,21 +134,54 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         return fileURL
     }
     
+    /// Met en pause la capture (arrête l'engine, conserve le writer)
+    func pauseCapture() {
+        guard isCapturing, !isPaused, let engine = audioEngine else { return }
+        isPaused = true
+        pauseStartTime = Date()
+        engine.pause()
+        print("🎙️ ⏸ Capture en pause")
+    }
+    
+    /// Reprend la capture après une pause
+    func resumeCapture() throws {
+        guard isCapturing, isPaused, let engine = audioEngine else { return }
+        
+        // Accumuler le temps de pause
+        if let pauseStart = pauseStartTime {
+            pauseAccumulated += Date().timeIntervalSince(pauseStart)
+            pauseStartTime = nil
+        }
+        
+        isPaused = false
+        try engine.start()
+        print("🎙️ ▶️ Capture reprise (pause cumulée: ~\(Int(pauseAccumulated))s)")
+    }
+    
     /// Arrête la capture et finalise le fichier M4A.
     /// - Returns: URL du fichier M4A finalisé
     func stopCapture() async throws -> URL {
-        guard isCapturing, let engine = self.audioEngine else {
+        guard isCapturing else {
             throw AudioCaptureError.notRecording
         }
         
+        // Si en pause, accumuler le temps
+        if isPaused, let pauseStart = pauseStartTime {
+            pauseAccumulated += Date().timeIntervalSince(pauseStart)
+        }
+        
         // 1. Arrêter le tap et l'engine
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        if let engine = self.audioEngine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
         self.audioEngine = nil
         self.isCapturing = false
+        self.isPaused = false
         
-        let duration = startTime.map { Date().timeIntervalSince($0) } ?? 0
-        print("🎙️ Capture arrêtée. Durée: ~\(Int(duration))s, buffers: \(sampleCount), frames: \(totalFrameCount), non-silence: \(nonSilentBufferCount)/\(sampleCount)")
+        let totalDuration = startTime.map { Date().timeIntervalSince($0) } ?? 0
+        let recordingDuration = totalDuration - pauseAccumulated
+        print("🎙️ Capture arrêtée. Durée totale: ~\(Int(totalDuration))s, enregistrement effectif: ~\(Int(recordingDuration))s, buffers: \(sampleCount), non-silence: \(nonSilentBufferCount)/\(sampleCount)")
         
         // 2. Finaliser l'écriture du fichier
         guard let writer = assetWriter, let input = audioInput else {
@@ -185,7 +227,7 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         // Vérifier la taille du fichier
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         let fileSize = attrs[.size] as? Int64 ?? 0
-        print("🎙️ ✅ Fichier audio finalisé: \(url.lastPathComponent) (\(fileSize / 1024) KB, \(sampleCount) buffers, ~\(Int(duration))s)")
+        print("🎙️ ✅ Fichier audio finalisé: \(url.lastPathComponent) (\(fileSize / 1024) KB, \(sampleCount) buffers, ~\(Int(recordingDuration))s effectifs)")
         
         if fileSize < 1024 {
             print("🎙️ ⚠️ Fichier audio trop petit (\(fileSize) bytes)")
@@ -204,6 +246,7 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         }
         audioEngine = nil
         isCapturing = false
+        isPaused = false
         
         audioInput?.markAsFinished()
         assetWriter?.cancelWriting()
@@ -216,6 +259,48 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         outputURL = nil
         
         print("🎙️ ⚠️ Capture annulée (\(sampleCount) buffers reçus)")
+    }
+    
+    // MARK: - Static Utilities
+    
+    /// Nettoie les fichiers d'enregistrement orphelins > 48h.
+    /// Préserve ceux référencés dans UserDefaults (en attente d'upload).
+    /// À appeler au lancement de l'app.
+    static func cleanupOrphanedRecordings() {
+        let dir = Config.recordingsDirectory
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.creationDateKey]
+        ) else { return }
+        
+        let now = Date()
+        let pendingPath = UserDefaults.standard.string(forKey: "recording.audioFilePath")
+        var cleanedCount = 0
+        
+        for file in files {
+            guard file.pathExtension == "m4a" else { continue }
+            
+            // Ne pas supprimer le fichier en attente d'upload
+            if file.path == pendingPath { continue }
+            
+            if let creationDate = (try? file.resourceValues(forKeys: [.creationDateKey]))?.creationDate,
+               now.timeIntervalSince(creationDate) > 172_800 { // 48h
+                try? FileManager.default.removeItem(at: file)
+                cleanedCount += 1
+            }
+        }
+        
+        if cleanedCount > 0 {
+            print("🎙️ 🗑 Nettoyé \(cleanedCount) fichier(s) orphelin(s) > 48h")
+        }
+    }
+    
+    /// Vérifie que le micro est autorisé
+    static func checkMicrophonePermission() async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                continuation.resume(returning: granted)
+            }
+        }
     }
     
     // MARK: - Private
@@ -241,7 +326,6 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         
         let writer = try AVAssetWriter(url: outputURL, fileType: .m4a)
         
-        // Configurer l'output AAC
         let audioSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: sampleRate,
@@ -262,7 +346,6 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
             throw AudioCaptureError.writerSetupFailed(writer.error?.localizedDescription ?? "startWriting failed")
         }
         
-        // On démarre la session à 0 — les timestamps seront relatifs
         writer.startSession(atSourceTime: .zero)
         
         self.assetWriter = writer
@@ -273,7 +356,8 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
     
     /// Traite un buffer audio du micro
     private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer, time: AVAudioTime) {
-        guard isCapturing,
+        // Ignorer les buffers pendant la pause
+        guard isCapturing, !isPaused,
               let writer = assetWriter,
               let input = audioInput,
               writer.status == .writing,
@@ -298,24 +382,30 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         }
         
         // Convertir AVAudioPCMBuffer → CMSampleBuffer pour AVAssetWriter
-        guard let sampleBuffer = createSampleBuffer(from: buffer, presentationTime: cmTime(from: time)) else {
+        guard let sampleBuffer = createSampleBuffer(from: buffer, presentationTime: currentPresentationTime()) else {
             return
         }
         
         if input.append(sampleBuffer) {
             sampleCount += 1
             if sampleCount % 500 == 0 {
-                let elapsed = startTime.map { Date().timeIntervalSince($0) } ?? 0
-                print("🎙️ 📝 \(sampleCount) buffers (~\(Int(elapsed))s) — non-silence: \(nonSilentBufferCount)/\(sampleCount)")
+                let elapsed = effectiveRecordingDuration
+                print("🎙️ 📝 \(sampleCount) buffers (~\(Int(elapsed))s effectifs) — non-silence: \(nonSilentBufferCount)/\(sampleCount)")
             }
         }
     }
     
-    /// Convertit AVAudioTime en CMTime
-    private func cmTime(from audioTime: AVAudioTime) -> CMTime {
-        // Calculer le temps relatif depuis le début
-        let elapsed = startTime.map { Date().timeIntervalSince($0) } ?? 0
-        return CMTime(seconds: elapsed, preferredTimescale: 48000)
+    /// Durée effective d'enregistrement (sans les pauses)
+    private var effectiveRecordingDuration: TimeInterval {
+        guard let start = startTime else { return 0 }
+        let total = Date().timeIntervalSince(start)
+        let currentPause = isPaused ? (pauseStartTime.map { Date().timeIntervalSince($0) } ?? 0) : 0
+        return total - pauseAccumulated - currentPause
+    }
+    
+    /// Calcule le presentation time en tenant compte des pauses
+    private func currentPresentationTime() -> CMTime {
+        return CMTime(seconds: effectiveRecordingDuration, preferredTimescale: 48000)
     }
     
     /// Crée un CMSampleBuffer à partir d'un AVAudioPCMBuffer
@@ -332,7 +422,6 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         var interleavedData = [Float](repeating: 0, count: interleavedCount)
         
         if format.isInterleaved {
-            // Copier directement
             memcpy(&interleavedData, channelData[0], interleavedCount * MemoryLayout<Float>.size)
         } else {
             for frame in 0..<frames {
@@ -344,7 +433,6 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         
         let dataSize = interleavedCount * MemoryLayout<Float>.size
         
-        // Créer le format description interleaved
         var asbd = AudioStreamBasicDescription(
             mSampleRate: format.sampleRate,
             mFormatID: kAudioFormatLinearPCM,
@@ -370,10 +458,9 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         )
         guard fmtStatus == noErr, let fmtDesc = formatDescription else { return nil }
         
-        // Créer le block buffer avec une copie des données
         var blockBuffer: CMBlockBuffer?
         let blockStatus = interleavedData.withUnsafeMutableBytes { rawBuffer -> OSStatus in
-            guard let baseAddress = rawBuffer.baseAddress else { return -1 }
+            guard let _ = rawBuffer.baseAddress else { return -1 }
             return CMBlockBufferCreateWithMemoryBlock(
                 allocator: kCFAllocatorDefault,
                 memoryBlock: nil,
@@ -389,7 +476,6 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         
         guard blockStatus == noErr, let block = blockBuffer else { return nil }
         
-        // Copier les données dans le block buffer
         let copyStatus = interleavedData.withUnsafeBytes { rawBuffer -> OSStatus in
             guard let baseAddress = rawBuffer.baseAddress else { return -1 }
             return CMBlockBufferReplaceDataBytes(
@@ -402,7 +488,6 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         
         guard copyStatus == noErr else { return nil }
         
-        // Créer le CMSampleBuffer
         var sampleBuffer: CMSampleBuffer?
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: CMTimeValue(frameCount), timescale: CMTimeScale(format.sampleRate)),

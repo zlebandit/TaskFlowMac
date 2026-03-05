@@ -3,12 +3,19 @@
 //  TaskFlowMac
 //
 //  Mini app menubar pour transcription automatique de réunions.
-//  Capture l'audio système (Teams/Zoom/Meet) via ScreenCaptureKit.
+//  Capture le micro du Mac (réunions en salle) via AVAudioEngine.
 //
 //  Pilotage via URL Scheme :
 //    taskflowmac://start   → démarre l'enregistrement du prochain RDV
 //    taskflowmac://stop    → arrête et envoie pour transcription
+//    taskflowmac://pause   → met en pause l'enregistrement
+//    taskflowmac://resume  → reprend l'enregistrement
 //    taskflowmac://toggle  → start/stop automatique
+//    taskflowmac://cancel  → annule l'enregistrement
+//
+//  Au lancement :
+//    - Nettoyage des fichiers audio orphelins > 48h
+//    - Auto-recovery d'un enregistrement interrompu (crash/quit)
 //
 
 import SwiftUI
@@ -17,16 +24,24 @@ import SwiftUI
 struct TaskFlowMacApp: App {
     @State private var appState = AppState()
     
+    init() {
+        // Nettoyage des fichiers orphelins > 48h au lancement
+        AudioCaptureService.cleanupOrphanedRecordings()
+    }
+    
     var body: some Scene {
         MenuBarExtra {
             MenuBarPopover()
                 .environment(appState)
+                .onAppear {
+                    checkForRecoveredRecording()
+                }
         } label: {
             menuBarLabel
         }
         .menuBarExtraStyle(.window)
         
-        // Invisible Settings window (pour les permissions ScreenCaptureKit)
+        // Invisible Settings window (pour les permissions)
         Settings {
             SettingsView()
                 .environment(appState)
@@ -35,16 +50,37 @@ struct TaskFlowMacApp: App {
     
     // MARK: - MenuBar Icon
     
-    /// Icône dynamique : micro normal ou pulsant rouge si enregistrement
+    /// Icône dynamique : micro normal, pulsant rouge si enregistrement, pause si en pause
     private var menuBarLabel: some View {
         Group {
-            if appState.isRecording {
+            switch appState.recordingPhase {
+            case .recording:
                 Image(systemName: "record.circle.fill")
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(.red, .red)
-            } else {
+            case .paused:
+                Image(systemName: "pause.circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.orange, .orange)
+            case .uploading:
+                Image(systemName: "arrow.up.circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.blue, .blue)
+            default:
                 Image(systemName: "waveform")
             }
         }
+    }
+    
+    // MARK: - Recovery
+    
+    /// Vérifie au lancement si un enregistrement interrompu peut être récupéré
+    private func checkForRecoveredRecording() {
+        guard let recovered = appState.checkForRecovery() else { return }
+        
+        print("🎙️ 🔄 Enregistrement récupéré trouvé: \(recovered.eventTitle)")
+        
+        // Auto-retry silencieux
+        appState.retryRecoveredRecording(recovered)
     }
 }

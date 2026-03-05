@@ -5,6 +5,13 @@
 //  État global de l'application.
 //  Source de vérité unique pour les réunions et l'enregistrement.
 //
+//  Fonctionnalités :
+//    - Sync des réunions du jour (cache local)
+//    - Enregistrement audio micro avec pause/resume
+//    - Persistance de l'état d'enregistrement (survie crash/quit)
+//    - Auto-recovery au relancement (retry upload si fichier présent)
+//    - Nettoyage automatique des fichiers orphelins > 48h
+//
 
 import SwiftUI
 import Observation
@@ -40,7 +47,6 @@ class AppState {
         lastSyncDate = UserDefaults.standard.object(forKey: "lastSyncDate") as? Date
         if let data = UserDefaults.standard.data(forKey: Self.cacheKey),
            let cached = try? JSONDecoder().decode([CalendarEvent].self, from: data) {
-            // Only restore if cache is from today
             if Calendar.current.isDateInToday(lastSyncDate ?? .distantPast) {
                 meetings = cached
             }
@@ -53,7 +59,7 @@ class AppState {
         }
     }
     
-    // MARK: - Recording
+    // MARK: - Recording State
     
     /// Phase d'enregistrement
     var recordingPhase: RecordingPhase = .idle
@@ -61,13 +67,13 @@ class AppState {
     /// Réunion en cours d'enregistrement
     var recordingEvent: CalendarEvent?
     
-    /// Secondes écoulées
+    /// Secondes écoulées (enregistrement effectif, sans les pauses)
     var elapsedSeconds: Int = 0
     
     /// Timer pour le compteur
     private var timer: Timer?
     
-    /// Service de capture audio (ScreenCaptureKit)
+    /// Service de capture audio
     private let audioCaptureService = AudioCaptureService()
     
     /// Service d'upload vers n8n
@@ -75,6 +81,9 @@ class AppState {
     
     /// URL du fichier audio en cours d'enregistrement
     private var currentRecordingURL: URL?
+    
+    /// Date de démarrage de l'enregistrement (ISO8601)
+    private var recordingStartDate: String?
     
     // MARK: - Computed
     
@@ -115,26 +124,55 @@ class AppState {
         return String(format: "%02d:%02d", m, s)
     }
     
-    // MARK: - Actions
+    // MARK: - Recording Actions
     
-    /// Démarre la capture audio réelle via ScreenCaptureKit
+    /// Démarre la capture audio micro
     func startRecording(for event: CalendarEvent) {
         recordingEvent = event
         recordingPhase = .recording
         elapsedSeconds = 0
+        recordingStartDate = ISO8601DateFormatter().string(from: Date())
         startTimer()
         
-        // Lancer la capture audio en arrière-plan
+        // Persister l'état pour recovery
+        persistRecordingState(event: event)
+        
         Task { @MainActor in
             do {
                 let fileURL = try await audioCaptureService.startCapture()
                 currentRecordingURL = fileURL
+                // Persister le chemin du fichier audio
+                UserDefaults.standard.set(fileURL.path, forKey: "recording.audioFilePath")
                 print("🎙️ ✅ Capture démarrée → \(fileURL.lastPathComponent)")
             } catch {
                 print("🎙️ ❌ Erreur démarrage capture: \(error.localizedDescription)")
                 recordingPhase = .error(error.localizedDescription)
                 stopTimer()
+                clearPersistedState()
             }
+        }
+    }
+    
+    /// Met en pause l'enregistrement
+    func pauseRecording() {
+        guard recordingPhase == .recording else { return }
+        audioCaptureService.pauseCapture()
+        recordingPhase = .paused
+        stopTimer()
+        print("🎙️ ⏸ Enregistrement en pause")
+    }
+    
+    /// Reprend l'enregistrement après pause
+    func resumeRecording() {
+        guard recordingPhase == .paused else { return }
+        do {
+            try audioCaptureService.resumeCapture()
+            recordingPhase = .recording
+            startTimer()
+            print("🎙️ ▶️ Enregistrement repris")
+        } catch {
+            print("🎙️ ❌ Erreur reprise: \(error.localizedDescription)")
+            recordingPhase = .error(error.localizedDescription)
         }
     }
     
@@ -148,38 +186,47 @@ class AppState {
             return
         }
         
-        // Arrêter la capture + upload en arrière-plan
+        // Persister la date de fin et les participants pour recovery
+        let endDate = ISO8601DateFormatter().string(from: Date())
+        UserDefaults.standard.set(endDate, forKey: "recording.endDate")
+        if let participants = event.allParticipants ?? event.participants,
+           let jsonData = try? JSONEncoder().encode(participants),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            UserDefaults.standard.set(jsonString, forKey: "recording.participantsJSON")
+        }
+        
         Task { @MainActor in
             do {
                 // 1. Arrêter la capture → fichier M4A finalisé
                 let fileURL = try await audioCaptureService.stopCapture()
                 print("🎙️ ✅ Fichier audio prêt: \(fileURL.lastPathComponent)")
                 
-                // 2. Upload vers n8n pour transcription
+                // 2. Upload vers n8n (avec retry 3x)
                 try await uploadService.uploadAudio(fileURL: fileURL, event: event)
                 print("🎙️ ✅ Upload réussi")
                 
-                // 3. Cleanup du fichier local
+                // 3. Cleanup : fichier + état persisté
                 uploadService.cleanupFile(at: fileURL)
                 currentRecordingURL = nil
+                clearPersistedState()
                 
                 // 4. Marquer comme terminé
                 markDone()
                 
             } catch let captureError as AudioCaptureError {
-                // Erreur de capture (noAudioCaptured, permissionDenied, etc.)
                 print("🎙️ ⚠️ Erreur capture: \(captureError.localizedDescription)")
                 markError(captureError.localizedDescription ?? "Erreur de capture audio")
+                // Ne pas clear l'état persisté — le fichier sera récupéré au relancement
             } catch {
                 print("🎙️ ❌ Erreur stop/upload: \(error.localizedDescription)")
                 markError(error.localizedDescription)
+                // État persisté conservé pour retry au relancement
             }
         }
     }
     
     func markDone() {
         recordingPhase = .done
-        // Reset après 3s
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             self?.reset()
         }
@@ -194,6 +241,7 @@ class AppState {
         recordingEvent = nil
         elapsedSeconds = 0
         currentRecordingURL = nil
+        recordingStartDate = nil
         stopTimer()
     }
     
@@ -202,8 +250,137 @@ class AppState {
         stopTimer()
         Task { @MainActor in
             await audioCaptureService.cancelCapture()
+            clearPersistedState()
             reset()
         }
+    }
+    
+    // MARK: - Persistence (UserDefaults) pour recovery après crash/quit
+    
+    private static let kEventId = "recording.eventId"
+    private static let kEventTitle = "recording.eventTitle"
+    private static let kNotionPageId = "recording.notionPageId"
+    private static let kAudioFilePath = "recording.audioFilePath"
+    private static let kStartDate = "recording.startDate"
+    private static let kEndDate = "recording.endDate"
+    private static let kParticipantsJSON = "recording.participantsJSON"
+    private static let kIsActive = "recording.isActive"
+    
+    /// Persiste l'état d'enregistrement
+    private func persistRecordingState(event: CalendarEvent) {
+        let defaults = UserDefaults.standard
+        defaults.set(event.id, forKey: Self.kEventId)
+        defaults.set(event.displayTitle, forKey: Self.kEventTitle)
+        defaults.set(event.notionPageId, forKey: Self.kNotionPageId)
+        defaults.set(recordingStartDate, forKey: Self.kStartDate)
+        defaults.set(true, forKey: Self.kIsActive)
+        print("🎙️ 💾 État enregistrement persisté (event: \(event.displayTitle))")
+    }
+    
+    /// Supprime l'état persisté
+    func clearPersistedState() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: Self.kEventId)
+        defaults.removeObject(forKey: Self.kEventTitle)
+        defaults.removeObject(forKey: Self.kNotionPageId)
+        defaults.removeObject(forKey: Self.kAudioFilePath)
+        defaults.removeObject(forKey: Self.kStartDate)
+        defaults.removeObject(forKey: Self.kEndDate)
+        defaults.removeObject(forKey: Self.kParticipantsJSON)
+        defaults.removeObject(forKey: Self.kIsActive)
+    }
+    
+    /// Données récupérées d'un enregistrement interrompu
+    struct RecoveredRecording {
+        let eventTitle: String
+        let notionPageId: String
+        let audioFilePath: String
+        let startDate: String
+        let endDate: String
+        let participantsJSON: String
+    }
+    
+    /// Vérifie si un enregistrement interrompu peut être récupéré
+    func checkForRecovery() -> RecoveredRecording? {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: Self.kIsActive),
+              let eventTitle = defaults.string(forKey: Self.kEventTitle),
+              let notionPageId = defaults.string(forKey: Self.kNotionPageId),
+              let audioFilePath = defaults.string(forKey: Self.kAudioFilePath),
+              let startDate = defaults.string(forKey: Self.kStartDate) else {
+            return nil
+        }
+        
+        let endDate = defaults.string(forKey: Self.kEndDate) ?? ISO8601DateFormatter().string(from: Date())
+        let participantsJSON = defaults.string(forKey: Self.kParticipantsJSON) ?? "[]"
+        
+        // Vérifier que le fichier audio existe encore
+        guard FileManager.default.fileExists(atPath: audioFilePath) else {
+            print("🎙️ ⚠️ Fichier audio disparu: \(audioFilePath)")
+            clearPersistedState()
+            return nil
+        }
+        
+        // Vérifier que le fichier n'est pas trop petit (> 10 KB)
+        let size = (try? FileManager.default.attributesOfItem(atPath: audioFilePath)[.size] as? Int) ?? 0
+        guard size > 10_240 else {
+            try? FileManager.default.removeItem(atPath: audioFilePath)
+            clearPersistedState()
+            return nil
+        }
+        
+        let sizeMB = Double(size) / 1_048_576
+        print("🎙️ 🔄 Enregistrement récupérable trouvé: \(eventTitle) (\(String(format: "%.1f", sizeMB)) MB)")
+        return RecoveredRecording(
+            eventTitle: eventTitle,
+            notionPageId: notionPageId,
+            audioFilePath: audioFilePath,
+            startDate: startDate,
+            endDate: endDate,
+            participantsJSON: participantsJSON
+        )
+    }
+    
+    /// Tente l'upload d'un enregistrement récupéré
+    func retryRecoveredRecording(_ recovered: RecoveredRecording) {
+        recordingPhase = .uploading
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let eventDate = dateFormatter.string(from: Date())
+        
+        Task { @MainActor in
+            do {
+                let fileURL = URL(fileURLWithPath: recovered.audioFilePath)
+                try await uploadService.uploadRecoveredAudio(
+                    fileURL: fileURL,
+                    eventTitle: recovered.eventTitle,
+                    notionPageId: recovered.notionPageId,
+                    eventDate: eventDate,
+                    startDate: recovered.startDate,
+                    endDate: recovered.endDate,
+                    participantsJSON: recovered.participantsJSON
+                )
+                
+                // Succès → cleanup
+                uploadService.cleanupFile(at: fileURL)
+                clearPersistedState()
+                print("🎙️ ✅ Recovery upload réussi pour: \(recovered.eventTitle)")
+                markDone()
+                
+            } catch {
+                print("🎙️ ❌ Recovery upload échoué: \(error.localizedDescription)")
+                // L'état persisté reste — on réessaiera au prochain lancement
+                markError("Upload échoué : \(recovered.eventTitle). Sera réessayé au prochain lancement.")
+            }
+        }
+    }
+    
+    /// Supprime un enregistrement récupéré (choix utilisateur)
+    func discardRecoveredRecording(_ recovered: RecoveredRecording) {
+        try? FileManager.default.removeItem(atPath: recovered.audioFilePath)
+        clearPersistedState()
+        print("🎙️ 🗑️ Enregistrement récupéré supprimé: \(recovered.eventTitle)")
     }
     
     // MARK: - Timer
@@ -211,7 +388,8 @@ class AppState {
     private func startTimer() {
         stopTimer()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            self?.elapsedSeconds += 1
+            guard let self, self.recordingPhase == .recording else { return }
+            self.elapsedSeconds += 1
         }
     }
     

@@ -5,6 +5,11 @@
 //  Popover principal affiché quand on clique sur l'icône menubar.
 //  Affiche les réunions du jour et les contrôles d'enregistrement.
 //
+//  Contrôles enregistrement :
+//    - Bouton pause/resume (⏸/▶️)
+//    - Bouton stop (■) → arrête et lance transcription
+//    - Bouton annuler (✕) → supprime l'enregistrement
+//
 
 import SwiftUI
 
@@ -82,9 +87,14 @@ struct MenuBarPopover: View {
     
     private var recordingBanner: some View {
         HStack(spacing: 10) {
+            // Indicateur visuel
             if appState.recordingPhase == .uploading {
                 ProgressView()
                     .controlSize(.small)
+            } else if appState.recordingPhase == .paused {
+                Image(systemName: "pause.circle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.body)
             } else {
                 Circle()
                     .fill(.red)
@@ -94,11 +104,26 @@ struct MenuBarPopover: View {
             }
             
             VStack(alignment: .leading, spacing: 1) {
-                Text(appState.recordingPhase == .uploading
-                     ? "Envoi pour transcription..."
-                     : (appState.recordingEvent?.displayTitle ?? "Enregistrement"))
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
+                if appState.recordingPhase == .uploading {
+                    Text("Envoi pour transcription...")
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                } else {
+                    HStack(spacing: 6) {
+                        Text(appState.recordingEvent?.displayTitle ?? "Enregistrement")
+                            .font(.subheadline.weight(.medium))
+                            .lineLimit(1)
+                        
+                        if appState.recordingPhase == .paused {
+                            Text("PAUSE")
+                                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.orange)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(.orange.opacity(0.15), in: Capsule())
+                        }
+                    }
+                }
                 
                 if appState.isRecording {
                     Text(appState.formattedDuration)
@@ -110,6 +135,21 @@ struct MenuBarPopover: View {
             Spacer()
             
             if appState.isRecording {
+                // Bouton pause / resume
+                Button {
+                    if appState.recordingPhase == .paused {
+                        appState.resumeRecording()
+                    } else {
+                        appState.pauseRecording()
+                    }
+                } label: {
+                    Image(systemName: appState.recordingPhase == .paused ? "play.fill" : "pause.fill")
+                        .font(.caption)
+                        .foregroundStyle(appState.recordingPhase == .paused ? .green : .orange)
+                }
+                .buttonStyle(.plain)
+                .help(appState.recordingPhase == .paused ? "Reprendre" : "Mettre en pause")
+                
                 // Bouton annuler
                 Button {
                     appState.cancelRecording()
@@ -130,12 +170,16 @@ struct MenuBarPopover: View {
                         .foregroundStyle(.red)
                 }
                 .buttonStyle(.plain)
-                .help("Arr\u{00ea}ter et transcrire")
+                .help("Arrêter et transcrire")
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(.red.opacity(0.08))
+        .background(
+            appState.recordingPhase == .paused
+                ? Color.orange.opacity(0.08)
+                : Color.red.opacity(0.08)
+        )
     }
     
     @State private var pulseOpacity: Double = 1.0
@@ -146,7 +190,7 @@ struct MenuBarPopover: View {
         HStack(spacing: 8) {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
-            Text("Transcription envoy\u{00e9}e !")
+            Text("Transcription envoyée !")
                 .font(.subheadline.weight(.medium))
             Spacer()
         }
@@ -191,7 +235,7 @@ struct MenuBarPopover: View {
             Image(systemName: "calendar.badge.checkmark")
                 .font(.title2)
                 .foregroundStyle(.green)
-            Text("Aucune r\u{00e9}union aujourd'hui")
+            Text("Aucune réunion aujourd'hui")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -232,14 +276,20 @@ struct MenuBarPopover: View {
                     
                     if isRecordingThis {
                         HStack(spacing: 3) {
-                            Circle().fill(.red).frame(width: 5, height: 5)
-                            Text("REC")
+                            Circle()
+                                .fill(appState.recordingPhase == .paused ? .orange : .red)
+                                .frame(width: 5, height: 5)
+                            Text(appState.recordingPhase == .paused ? "PAUSE" : "REC")
                                 .font(.system(size: 8, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.red)
+                                .foregroundStyle(appState.recordingPhase == .paused ? .orange : .red)
                         }
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
-                        .background(.red.opacity(0.1), in: Capsule())
+                        .background(
+                            (appState.recordingPhase == .paused ? Color.orange : Color.red)
+                                .opacity(0.1),
+                            in: Capsule()
+                        )
                     }
                 }
                 
@@ -261,9 +311,9 @@ struct MenuBarPopover: View {
             
             // Bouton enregistrer / en cours
             if isRecordingThis {
-                // Déjà en cours — waveform animé
-                Image(systemName: "waveform")
-                    .foregroundStyle(.red)
+                // Déjà en cours — waveform animé ou pause
+                Image(systemName: appState.recordingPhase == .paused ? "pause.fill" : "waveform")
+                    .foregroundStyle(appState.recordingPhase == .paused ? .orange : .red)
                     .font(.caption)
             } else if !appState.isRecording && appState.recordingPhase == .idle {
                 Button {
@@ -274,7 +324,7 @@ struct MenuBarPopover: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Enregistrer cette r\u{00e9}union")
+                .help("Enregistrer cette réunion")
             }
         }
         .padding(.horizontal, 16)
@@ -286,7 +336,7 @@ struct MenuBarPopover: View {
     
     private var footerSection: some View {
         HStack {
-            Text("\u{2318}\u{21e7}R d\u{00e9}marre / arr\u{00ea}te")
+            Text("\u{2318}\u{21e7}R démarre / arrête")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
             
@@ -350,7 +400,7 @@ struct MenuBarPopover: View {
             let meetings = try await SyncService().fetchMeetings()
             appState.meetings = meetings
             appState.lastSyncDate = Date()
-            print("\u{2705} Sync: \(meetings.count) r\u{00e9}unions")
+            print("\u{2705} Sync: \(meetings.count) réunions")
         } catch {
             print("\u{274c} Sync failed: \(error.localizedDescription)")
         }

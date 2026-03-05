@@ -1,6 +1,6 @@
 # TaskFlowMac
 
-App macOS MenuBar pour afficher les réunions du jour et enregistrer/transcrire automatiquement l'audio des visioconférences.
+App macOS MenuBar pour afficher les réunions du jour et enregistrer/transcrire automatiquement l'audio via le microphone du Mac.
 
 ## Architecture
 
@@ -11,73 +11,109 @@ App macOS MenuBar pour afficher les réunions du jour et enregistrer/transcrire 
 - **VPS** : `/vps/taskflow-mac/`
 - **Mac local** : `~/Documents/Ressources/TaskFlowMac/`
 
-## État actuel — Phase 1 ✅
+## Fonctionnalités
 
-### Ce qui fonctionne
-- Icône menubar (waveform) → popover avec liste des réunions du jour
+### Phase 1 ✅ — Menu bar + réunions
+- Icône menubar dynamique (waveform / rouge rec / orange pause / bleu upload)
+- Popover avec liste des réunions du jour
 - Sync via webhook n8n `https://n8n.clementziza.com/webhook/taskflow-sync`
-- Cache UserDefaults (affichage immédiat du cache, sync en arrière-plan)
+- Cache UserDefaults (affichage immédiat, sync en arrière-plan)
 - Format date français ("Jeudi 5 mars", "1er" pour le premier du mois)
 - Titres et lieux multi-lignes
 - Barre colorée : jaune (pro) / rose (perso)
-- URL Scheme : `taskflowmac://start`, `taskflowmac://stop`, `taskflowmac://toggle`, `taskflowmac://cancel`
-- Raccourci ⌘⇧R (affiché en footer)
 - Bouton Quitter en footer
-- Pas d'icône dans le Dock (LSUIElement = true dans Info.plist)
-- App Sandbox + Outgoing Connections (Client) activés via entitlements
+- Pas d'icône dans le Dock (LSUIElement = true)
 
-## État actuel — Phase 2 🚧 (en cours)
+### Phase 2 ✅ — Capture micro + transcription
+- **Capture audio micro** via AVAudioEngine (réunions en salle)
+- **Encodage M4A** (AAC 128kbps) via AVAssetWriter
+- **Upload multipart** vers n8n pour transcription Gemini → Notion
+- **Retry automatique** : 3 tentatives avec backoff exponentiel (2s → 5s → 10s)
+- **Validation fichier** : taille min 10 KB, max 500 MB avant upload
+- **Streaming upload** : fichier audio envoyé par chunks de 1 MB (pas tout en RAM)
 
-### Capture audio système + transcription automatique
+### Phase 3 ✅ — Robustesse & pilotage
+- **Pause / Resume** : met en pause l'enregistrement (l'audio pendant les pauses est ignoré)
+- **Persistance état** : survie crash/quit via UserDefaults
+- **Auto-recovery** : au relancement, détecte un enregistrement interrompu et retente l'upload
+- **Nettoyage automatique** : fichiers orphelins > 48h supprimés au lancement
+- **Boutons UI** : pause ⏸ / resume ▶️ / stop ⏹ / annuler ✕ dans le popover
+- **Indicateurs visuels** : badge PAUSE orange, badge REC rouge, icône menubar contextuelle
 
-#### Flux implémenté
-1. **Clic sur 🎤** (ou URL scheme `taskflowmac://start`) → démarre capture audio système via **ScreenCaptureKit**
-2. **Clic sur ⏹** (ou `taskflowmac://stop`) → arrête la capture, sauvegarde fichier M4A via **AVAssetWriter**
-3. **Upload multipart** du fichier audio vers n8n workflow `lLIDlf1W4H1qNDeq` (TaskFlow Transcription Réunion)
-4. **n8n** envoie à Whisper/OpenAI pour transcription → stocke dans Notion
+## URL Schemes
 
-#### Nouveaux fichiers créés
-- `Services/AudioCaptureService.swift` — Capture audio système via ScreenCaptureKit + encodage M4A
-- `Services/UploadService.swift` — Upload multipart/form-data vers n8n avec metadata
+Pilotage depuis Alfred, Terminal, ou raccourcis clavier :
 
-#### Fichiers modifiés
-- `Models/AppState.swift` — Intègre AudioCaptureService + UploadService (vrais services au lieu de simulations)
-- `Services/URLSchemeHandler.swift` — Ajout commande `cancel`, retrait des simulations
-- `Views/MenuBarPopover.swift` — Bannières done/error, bouton annuler, état uploading
-- `Info.plist` — Ajout `NSScreenCaptureUsageDescription` pour permission Screen Recording
+| Commande | URL | Description |
+|----------|-----|-------------|
+| Start | `taskflowmac://start` | Démarre l'enregistrement (réunion en cours > prochaine) |
+| Stop | `taskflowmac://stop` | Arrête et envoie pour transcription |
+| Toggle | `taskflowmac://toggle` | Start si idle, Stop si recording |
+| Pause | `taskflowmac://pause` | Met en pause l'enregistrement |
+| Resume | `taskflowmac://resume` | Reprend après pause |
+| Pause Toggle | `taskflowmac://pausetoggle` | Pause si recording, Resume si paused |
+| Cancel | `taskflowmac://cancel` | Annule l'enregistrement (supprime le fichier) |
+| Status | `taskflowmac://status` | Log l'état actuel (debug) |
 
-#### Détails techniques
-- **ScreenCaptureKit** : `SCStream` avec `SCStreamConfiguration.capturesAudio = true`
-- **Audio** : 44.1kHz stéréo, AAC 128kbps, format M4A
-- **Vidéo** : config minimale (2x2px, 1fps) — obligatoire mais inutilisé
-- **Permission TCC** : macOS demandera l'autorisation Screen Recording au premier lancement
-- **Upload** : multipart/form-data avec champs `file`, `notionPageId`, `titre`, `source`, `duree`
-- **Fichiers temp** : stockés dans `~/Documents/TaskFlowMacRecordings/`, nettoyés après upload
+### Utilisation en Terminal
+```bash
+open "taskflowmac://toggle"        # Démarre ou arrête
+open "taskflowmac://pausetoggle"   # Pause ou reprend
+open "taskflowmac://cancel"        # Annule
+```
 
-#### ⚠️ À faire côté Xcode (Bruno)
-- `git pull` pour récupérer les modifications
-- **Add Files to Project** pour les nouveaux fichiers : `AudioCaptureService.swift`, `UploadService.swift`
-- Vérifier que le **Signing & Capabilities** a bien App Sandbox + Outgoing Connections
-- **Build & test** : au premier lancement, macOS demandera la permission Screen Recording
-- Si nécessaire : aller dans Préférences Système > Confidentialité > Enregistrement de l'écran pour autoriser TaskFlowMac
+## Intégration Alfred
 
-### Fichiers Swift
+Un workflow Alfred est fourni dans `alfred/TaskFlowMac.alfredworkflow`.
+
+**Raccourcis configurés :**
+- `⌘⇧R` → Toggle enregistrement (start/stop)
+- `⌘⇧P` → Toggle pause (pause/resume)
+- `⌘⇧X` → Annuler l'enregistrement
+- Keyword `tf` → Liste des commandes TaskFlowMac
+
+## Fichiers Swift
+
 ```
 TaskFlowMac/
-├── TaskFlowMacApp.swift          # @main, MenuBarExtra + Settings scene
-├── Config.swift                   # syncURL, transcribeURL, recordingsDirectory
-├── Info.plist                     # URL scheme + LSUIElement + NSScreenCaptureUsageDescription
+├── TaskFlowMacApp.swift          # @main, MenuBarExtra + recovery au lancement + cleanup orphelins
+├── Config.swift                   # syncURL, transcribeURL, recordingsDirectory, urlScheme
+├── Info.plist                     # URL scheme + LSUIElement + NSMicrophoneUsageDescription
+├── TaskFlowMac.entitlements       # App Sandbox + Outgoing Connections + Microphone
 ├── Models/
-│   ├── AppState.swift             # @Observable, meetings, recording state, AudioCaptureService, UploadService
-│   └── CalendarEvent.swift        # Codable model (Titre, DateStart, DateEnd, Lieu, Calendrier, participants...)
+│   ├── AppState.swift             # État global : meetings, recording, pause/resume, persistance, recovery
+│   └── CalendarEvent.swift        # Codable model (Titre, DateStart, DateEnd, Lieu, participants...)
 ├── Services/
-│   ├── AudioCaptureService.swift  # ScreenCaptureKit + AVAssetWriter → capture audio système → M4A
-│   ├── UploadService.swift        # Upload multipart/form-data vers n8n (fichier + metadata)
-│   ├── SyncService.swift          # POST vers webhook, decode SyncResponse { calendar: [CalendarEvent] }
-│   └── URLSchemeHandler.swift     # .onOpenURL handler pour taskflowmac:// (start/stop/toggle/cancel)
+│   ├── AudioCaptureService.swift  # AVAudioEngine + AVAssetWriter → micro → M4A (pause/resume, cleanup)
+│   ├── UploadService.swift        # Upload multipart streaming + retry 3x backoff + recovery upload
+│   ├── SyncService.swift          # Fetch réunions du jour via webhook n8n
+│   └── URLSchemeHandler.swift     # Handler URL schemes (start/stop/toggle/pause/resume/cancel/status)
 └── Views/
-    ├── MenuBarPopover.swift       # Vue principale : header date, recording/done/error banners, liste réunions, footer
+    ├── MenuBarPopover.swift       # Vue principale : banners, boutons pause/resume/cancel/stop, liste réunions
     └── SettingsView.swift         # Fenêtre Settings (placeholder)
+```
+
+## Flux d'enregistrement
+
+```
+1. Clic 🎤 ou taskflowmac://start
+   └─→ AVAudioEngine démarre le tap micro
+   └─→ AVAssetWriter encode en M4A (AAC 128kbps)
+   └─→ État persisté dans UserDefaults
+
+2. (Optionnel) taskflowmac://pause / resume
+   └─→ Engine en pause, buffers ignorés
+   └─→ Timestamps ajustés (pas de silence dans le fichier)
+
+3. Clic ⏹ ou taskflowmac://stop
+   └─→ Finalise le fichier M4A
+   └─→ Upload multipart vers n8n (retry 3x)
+   └─→ Cleanup fichier local + état persisté
+
+4. Si crash/quit pendant enregistrement :
+   └─→ Au relancement : détecte fichier + état persisté
+   └─→ Auto-retry upload silencieux
+   └─→ Fichiers orphelins > 48h nettoyés automatiquement
 ```
 
 ## Workflows n8n
@@ -86,19 +122,25 @@ TaskFlowMac/
 |----------|-----|-------|
 | TaskFlow Sync | `YtcNU48S2wQczCGl` | Récupère les réunions du jour |
 | TaskFlow Sync Get Réunions | `QlSisY6lXxWpwNWB` | Sub-workflow appelé par le sync |
-| TaskFlow Transcription Réunion | `lLIDlf1W4H1qNDeq` | Reçoit l'audio, transcrit, stocke dans Notion |
+| TaskFlow Transcription Réunion | `lLIDlf1W4H1qNDeq` | Reçoit l'audio, transcrit via Gemini, stocke dans Notion |
+
+## Permissions requises
+
+- **Microphone** : NSMicrophoneUsageDescription (Info.plist) + com.apple.security.device.audio-input (entitlements)
+- **Réseau** : com.apple.security.network.client (entitlements) pour les webhooks n8n
+- **App Sandbox** : activé
+
+## Setup Xcode (Bruno)
+
+1. `git pull` pour récupérer les modifications
+2. **Add Files to Project** si nouveaux fichiers Swift
+3. Vérifier **Signing & Capabilities** : App Sandbox + Outgoing Connections
+4. **Build & Run** (⌘R) — macOS demandera la permission Microphone au premier lancement
+5. Installer le workflow Alfred depuis `alfred/TaskFlowMac.alfredworkflow`
 
 ## Connexions MCP disponibles
 
-- `mcpServer_vps_admin` — VPS Admin (file_read, file_write, file_patch, git_push, shell_exec...)
+- `mcpServer_vps_admin` — VPS Admin (file_read, file_write, git_push, shell_exec...)
 - `mcpServer_github` — GitHub API
 - `mcpServer_n8n_mcp` — n8n documentation
 - `mcpServer_context7` — Context7 (documentation libs)
-
-## Infos utiles
-
-- **Git token** : déjà configuré dans le remote origin du repo
-- **User** : Bruno Clément-Ziza, bclementziza@gmail.com
-- **Xcode** : le projet est configuré localement, git pull + ⌘R pour tester
-- **Entitlements** : créés via Signing & Capabilities (App Sandbox + Outgoing Connections)
-- **Info.plist** : référencé dans Build Settings > Packaging > Info.plist File = `TaskFlowMac/Info.plist`
