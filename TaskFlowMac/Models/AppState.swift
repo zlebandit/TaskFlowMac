@@ -78,9 +78,9 @@ class AppState {
         print("\u{1f399}\u{fe0f} \u{1f4dd} writeMeetingsJSONFile: \(meetings.count) meetings, path=\(path)")
         do {
             try json.write(toFile: path, atomically: true, encoding: .utf8)
-            print("\u{1f399}\u{fe0f} \u{2705} JSON \u00e9crit: \(path)")
+            print("\u{1f399}\u{fe0f} \u{2705} JSON écrit: \(path)")
         } catch {
-            print("\u{1f399}\u{fe0f} \u{274c} Erreur \u00e9criture JSON: \(error)")
+            print("\u{1f399}\u{fe0f} \u{274c} Erreur écriture JSON: \(error)")
         }
     }
     
