@@ -142,7 +142,7 @@ struct MenuBarPopover: View {
                 }
             }
         }
-        .frame(maxHeight: 300)
+        .frame(maxHeight: min(CGFloat(appState.meetings.count) * 60 + 20, 500))
     }
     
     // MARK: - Meeting Row
