@@ -15,13 +15,43 @@ class AppState {
     // MARK: - Calendar
     
     /// Réunions du jour (depuis /taskflow-sync)
-    var meetings: [CalendarEvent] = []
+    var meetings: [CalendarEvent] = [] {
+        didSet { saveCacheToDisk() }
+    }
     
     /// Dernière sync
-    var lastSyncDate: Date?
+    var lastSyncDate: Date? {
+        didSet {
+            if let d = lastSyncDate {
+                UserDefaults.standard.set(d, forKey: "lastSyncDate")
+            }
+        }
+    }
     
     /// Chargement en cours
     var isLoading = false
+    
+    // MARK: - Cache
+    
+    private static let cacheKey = "cachedMeetings"
+    
+    init() {
+        // Restore cache on launch
+        lastSyncDate = UserDefaults.standard.object(forKey: "lastSyncDate") as? Date
+        if let data = UserDefaults.standard.data(forKey: Self.cacheKey),
+           let cached = try? JSONDecoder().decode([CalendarEvent].self, from: data) {
+            // Only restore if cache is from today
+            if Calendar.current.isDateInToday(lastSyncDate ?? .distantPast) {
+                meetings = cached
+            }
+        }
+    }
+    
+    private func saveCacheToDisk() {
+        if let data = try? JSONEncoder().encode(meetings) {
+            UserDefaults.standard.set(data, forKey: Self.cacheKey)
+        }
+    }
     
     // MARK: - Recording
     

@@ -25,7 +25,7 @@ struct MenuBarPopover: View {
             }
             
             // MARK: - Meetings List
-            if appState.isLoading {
+            if appState.meetings.isEmpty && appState.isLoading {
                 ProgressView()
                     .padding(20)
             } else if appState.meetings.isEmpty {
@@ -39,7 +39,7 @@ struct MenuBarPopover: View {
             // MARK: - Footer
             footerSection
         }
-        .frame(width: 320)
+        .frame(width: 380)
         .task {
             await loadMeetingsIfNeeded()
         }
@@ -50,13 +50,8 @@ struct MenuBarPopover: View {
     
     private var headerSection: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("TaskFlow")
-                    .font(.headline)
-                Text(todayFormatted)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text(todayFormatted)
+                .font(.headline)
             
             Spacer()
             
@@ -252,8 +247,15 @@ struct MenuBarPopover: View {
     private var todayFormatted: String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "fr_FR")
-        formatter.dateFormat = "EEEE d MMMM"
-        return formatter.string(from: Date()).capitalized
+        let day = Calendar.current.component(.day, from: Date())
+        if day == 1 {
+            formatter.dateFormat = "EEEE 1er MMMM"
+        } else {
+            formatter.dateFormat = "EEEE d MMMM"
+        }
+        let raw = formatter.string(from: Date())
+        // Capitalize only first letter, keep month lowercase
+        return raw.prefix(1).uppercased() + raw.dropFirst()
     }
     
     // MARK: - Data Loading
