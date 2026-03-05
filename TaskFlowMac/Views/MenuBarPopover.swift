@@ -158,7 +158,7 @@ struct MenuBarPopover: View {
                 HStack(spacing: 6) {
                     Text(event.displayTitle)
                         .font(.subheadline.weight(.medium))
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                     
                     if isRecordingThis {
                         HStack(spacing: 3) {
@@ -182,7 +182,7 @@ struct MenuBarPopover: View {
                         Text("\u{1f4cd} \(lieu)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
