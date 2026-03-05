@@ -8,7 +8,7 @@
 //    taskflowmac://start   → démarre l'enregistrement (réunion en cours ou prochaine)
 //    taskflowmac://stop    → arrête l'enregistrement et lance la transcription
 //    taskflowmac://toggle  → start si idle, stop si recording
-//    taskflowmac://status  → (futur) retourne l'état
+//    taskflowmac://cancel  → annule l'enregistrement en cours
 //
 //  Utilisation avec Alfred :
 //    Créer un workflow avec un Hotkey trigger → Open URL action
@@ -32,7 +32,7 @@ struct URLSchemeModifier: ViewModifier {
         guard url.scheme == Config.urlScheme else { return }
         
         let command = url.host ?? ""
-        print("🎙️ URL Scheme: \(command)")
+        print("\u{1f399}\u{fe0f} URL Scheme: \(command)")
         
         switch command {
         case "start":
@@ -45,42 +45,49 @@ struct URLSchemeModifier: ViewModifier {
             } else {
                 startRecording()
             }
+        case "cancel":
+            cancelRecording()
         default:
-            print("🎙️ Unknown URL command: \(command)")
+            print("\u{1f399}\u{fe0f} Unknown URL command: \(command)")
         }
     }
     
     private func startRecording() {
         // Déterminer quelle réunion enregistrer : en cours > prochaine
         guard let event = appState.ongoingMeeting ?? appState.nextMeeting else {
-            print("🎙️ ❌ Pas de réunion trouvée")
+            print("\u{1f399}\u{fe0f} \u{274c} Pas de réunion trouvée")
             return
         }
         
         guard !appState.isRecording else {
-            print("🎙️ ⚠️ Déjà en cours d'enregistrement")
+            print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} Déjà en cours d'enregistrement")
             return
         }
         
-        // TODO Phase 2 : démarrer ScreenCaptureKit ici
+        // Démarre la capture audio réelle via ScreenCaptureKit
         appState.startRecording(for: event)
-        print("🎙️ ✅ Enregistrement démarré pour: \(event.displayTitle)")
+        print("\u{1f399}\u{fe0f} \u{2705} Enregistrement démarré pour: \(event.displayTitle)")
     }
     
     private func stopRecording() {
         guard appState.isRecording else {
-            print("🎙️ ⚠️ Pas d'enregistrement en cours")
+            print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} Pas d'enregistrement en cours")
             return
         }
         
-        // TODO Phase 2 : arrêter ScreenCaptureKit + upload
+        // Arrête la capture + upload vers n8n
         appState.stopRecording()
-        print("🎙️ ⏹ Enregistrement arrêté")
-        
-        // Simuler succès pour l'instant
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            appState.markDone()
+        print("\u{1f399}\u{fe0f} \u{23f9} Enregistrement arrêté → upload en cours")
+    }
+    
+    private func cancelRecording() {
+        guard appState.isRecording else {
+            print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} Pas d'enregistrement en cours")
+            return
         }
+        
+        appState.cancelRecording()
+        print("\u{1f399}\u{fe0f} \u{1f5d1}\u{fe0f} Enregistrement annulé")
     }
 }
 

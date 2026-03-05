@@ -19,8 +19,18 @@ struct MenuBarPopover: View {
             Divider()
             
             // MARK: - Recording Banner (si actif)
-            if appState.isRecording {
+            if appState.isRecording || appState.recordingPhase == .uploading {
                 recordingBanner
+                Divider()
+            }
+            
+            // MARK: - Status Banner (done / error)
+            if case .done = appState.recordingPhase {
+                doneBanner
+                Divider()
+            }
+            if case .error(let msg) = appState.recordingPhase {
+                errorBanner(msg)
                 Divider()
             }
             
@@ -72,35 +82,56 @@ struct MenuBarPopover: View {
     
     private var recordingBanner: some View {
         HStack(spacing: 10) {
-            Circle()
-                .fill(.red)
-                .frame(width: 8, height: 8)
-                .opacity(pulseOpacity)
-                .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulseOpacity)
+            if appState.recordingPhase == .uploading {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Circle()
+                    .fill(.red)
+                    .frame(width: 8, height: 8)
+                    .opacity(pulseOpacity)
+                    .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulseOpacity)
+            }
             
             VStack(alignment: .leading, spacing: 1) {
-                Text(appState.recordingEvent?.displayTitle ?? "Enregistrement")
+                Text(appState.recordingPhase == .uploading
+                     ? "Envoi pour transcription..."
+                     : (appState.recordingEvent?.displayTitle ?? "Enregistrement"))
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
-                Text(appState.formattedDuration)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                
+                if appState.isRecording {
+                    Text(appState.formattedDuration)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
             }
             
             Spacer()
             
-            Button {
-                // TODO Phase 2 : stop + upload
-                appState.stopRecording()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    appState.markDone()
+            if appState.isRecording {
+                // Bouton annuler
+                Button {
+                    appState.cancelRecording()
+                } label: {
+                    Image(systemName: "xmark.circle")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
                 }
-            } label: {
-                Image(systemName: "stop.fill")
-                    .font(.body)
-                    .foregroundStyle(.red)
+                .buttonStyle(.plain)
+                .help("Annuler l'enregistrement")
+                
+                // Bouton stop
+                Button {
+                    appState.stopRecording()
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.body)
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+                .help("Arr\u{00ea}ter et transcrire")
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -108,6 +139,50 @@ struct MenuBarPopover: View {
     }
     
     @State private var pulseOpacity: Double = 1.0
+    
+    // MARK: - Done Banner
+    
+    private var doneBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            Text("Transcription envoy\u{00e9}e !")
+                .font(.subheadline.weight(.medium))
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.green.opacity(0.08))
+    }
+    
+    // MARK: - Error Banner
+    
+    private func errorBanner(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Erreur")
+                    .font(.subheadline.weight(.medium))
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+            Button {
+                appState.reset()
+            } label: {
+                Image(systemName: "xmark.circle")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.orange.opacity(0.08))
+    }
     
     // MARK: - Empty State
     
@@ -186,13 +261,12 @@ struct MenuBarPopover: View {
             
             // Bouton enregistrer / en cours
             if isRecordingThis {
-                // Déjà en cours
+                // Déjà en cours — waveform animé
                 Image(systemName: "waveform")
                     .foregroundStyle(.red)
                     .font(.caption)
-            } else if !appState.isRecording {
+            } else if !appState.isRecording && appState.recordingPhase == .idle {
                 Button {
-                    // TODO Phase 2 : démarrer ScreenCaptureKit
                     appState.startRecording(for: event)
                 } label: {
                     Image(systemName: "mic.fill")
@@ -276,9 +350,9 @@ struct MenuBarPopover: View {
             let meetings = try await SyncService().fetchMeetings()
             appState.meetings = meetings
             appState.lastSyncDate = Date()
-            print("✅ Sync: \(meetings.count) r\u{00e9}unions")
+            print("\u{2705} Sync: \(meetings.count) r\u{00e9}unions")
         } catch {
-            print("❌ Sync failed: \(error.localizedDescription)")
+            print("\u{274c} Sync failed: \(error.localizedDescription)")
         }
     }
 }

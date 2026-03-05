@@ -67,6 +67,15 @@ class AppState {
     /// Timer pour le compteur
     private var timer: Timer?
     
+    /// Service de capture audio (ScreenCaptureKit)
+    private let audioCaptureService = AudioCaptureService()
+    
+    /// Service d'upload vers n8n
+    private let uploadService = UploadService()
+    
+    /// URL du fichier audio en cours d'enregistrement
+    private var currentRecordingURL: URL?
+    
     // MARK: - Computed
     
     var isRecording: Bool {
@@ -108,16 +117,60 @@ class AppState {
     
     // MARK: - Actions
     
+    /// Démarre la capture audio réelle via ScreenCaptureKit
     func startRecording(for event: CalendarEvent) {
         recordingEvent = event
         recordingPhase = .recording
         elapsedSeconds = 0
         startTimer()
+        
+        // Lancer la capture audio en arrière-plan
+        Task { @MainActor in
+            do {
+                let fileURL = try await audioCaptureService.startCapture()
+                currentRecordingURL = fileURL
+                print("🎙️ ✅ Capture démarrée → \(fileURL.lastPathComponent)")
+            } catch {
+                print("🎙️ ❌ Erreur démarrage capture: \(error.localizedDescription)")
+                recordingPhase = .error(error.localizedDescription)
+                stopTimer()
+            }
+        }
     }
     
+    /// Arrête la capture et lance l'upload vers n8n
     func stopRecording() {
         recordingPhase = .uploading
         stopTimer()
+        
+        guard let event = recordingEvent else {
+            markError("Pas de réunion associée")
+            return
+        }
+        
+        // Arrêter la capture + upload en arrière-plan
+        Task { @MainActor in
+            do {
+                // 1. Arrêter la capture → fichier M4A finalisé
+                let fileURL = try await audioCaptureService.stopCapture()
+                print("🎙️ ✅ Fichier audio prêt: \(fileURL.lastPathComponent)")
+                
+                // 2. Upload vers n8n pour transcription
+                try await uploadService.uploadAudio(fileURL: fileURL, event: event)
+                print("🎙️ ✅ Upload réussi")
+                
+                // 3. Cleanup du fichier local
+                uploadService.cleanupFile(at: fileURL)
+                currentRecordingURL = nil
+                
+                // 4. Marquer comme terminé
+                markDone()
+                
+            } catch {
+                print("🎙️ ❌ Erreur stop/upload: \(error.localizedDescription)")
+                markError(error.localizedDescription)
+            }
+        }
     }
     
     func markDone() {
@@ -136,7 +189,17 @@ class AppState {
         recordingPhase = .idle
         recordingEvent = nil
         elapsedSeconds = 0
+        currentRecordingURL = nil
         stopTimer()
+    }
+    
+    /// Annule l'enregistrement en cours
+    func cancelRecording() {
+        stopTimer()
+        Task { @MainActor in
+            await audioCaptureService.cancelCapture()
+            reset()
+        }
     }
     
     // MARK: - Timer

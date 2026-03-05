@@ -20,54 +20,65 @@ App macOS MenuBar pour afficher les réunions du jour et enregistrer/transcrire 
 - Format date français ("Jeudi 5 mars", "1er" pour le premier du mois)
 - Titres et lieux multi-lignes
 - Barre colorée : jaune (pro) / rose (perso)
-- Bouton micro sur chaque réunion (UI seulement, pas de capture réelle)
-- Bandeau REC en haut quand enregistrement simulé
-- URL Scheme : `taskflowmac://start`, `taskflowmac://stop`, `taskflowmac://toggle`
+- URL Scheme : `taskflowmac://start`, `taskflowmac://stop`, `taskflowmac://toggle`, `taskflowmac://cancel`
 - Raccourci ⌘⇧R (affiché en footer)
 - Bouton Quitter en footer
 - Pas d'icône dans le Dock (LSUIElement = true dans Info.plist)
 - App Sandbox + Outgoing Connections (Client) activés via entitlements
 
+## État actuel — Phase 2 🚧 (en cours)
+
+### Capture audio système + transcription automatique
+
+#### Flux implémenté
+1. **Clic sur 🎤** (ou URL scheme `taskflowmac://start`) → démarre capture audio système via **ScreenCaptureKit**
+2. **Clic sur ⏹** (ou `taskflowmac://stop`) → arrête la capture, sauvegarde fichier M4A via **AVAssetWriter**
+3. **Upload multipart** du fichier audio vers n8n workflow `lLIDlf1W4H1qNDeq` (TaskFlow Transcription Réunion)
+4. **n8n** envoie à Whisper/OpenAI pour transcription → stocke dans Notion
+
+#### Nouveaux fichiers créés
+- `Services/AudioCaptureService.swift` — Capture audio système via ScreenCaptureKit + encodage M4A
+- `Services/UploadService.swift` — Upload multipart/form-data vers n8n avec metadata
+
+#### Fichiers modifiés
+- `Models/AppState.swift` — Intègre AudioCaptureService + UploadService (vrais services au lieu de simulations)
+- `Services/URLSchemeHandler.swift` — Ajout commande `cancel`, retrait des simulations
+- `Views/MenuBarPopover.swift` — Bannières done/error, bouton annuler, état uploading
+- `Info.plist` — Ajout `NSScreenCaptureUsageDescription` pour permission Screen Recording
+
+#### Détails techniques
+- **ScreenCaptureKit** : `SCStream` avec `SCStreamConfiguration.capturesAudio = true`
+- **Audio** : 44.1kHz stéréo, AAC 128kbps, format M4A
+- **Vidéo** : config minimale (2x2px, 1fps) — obligatoire mais inutilisé
+- **Permission TCC** : macOS demandera l'autorisation Screen Recording au premier lancement
+- **Upload** : multipart/form-data avec champs `file`, `notionPageId`, `titre`, `source`, `duree`
+- **Fichiers temp** : stockés dans `~/Documents/TaskFlowMacRecordings/`, nettoyés après upload
+
+#### ⚠️ À faire côté Xcode (Bruno)
+- `git pull` pour récupérer les modifications
+- **Add Files to Project** pour les nouveaux fichiers : `AudioCaptureService.swift`, `UploadService.swift`
+- Vérifier que le **Signing & Capabilities** a bien App Sandbox + Outgoing Connections
+- **Build & test** : au premier lancement, macOS demandera la permission Screen Recording
+- Si nécessaire : aller dans Préférences Système > Confidentialité > Enregistrement de l'écran pour autoriser TaskFlowMac
+
 ### Fichiers Swift
 ```
 TaskFlowMac/
 ├── TaskFlowMacApp.swift          # @main, MenuBarExtra + Settings scene
-├── Config.swift                   # syncURL, minSyncInterval
-├── Info.plist                     # URL scheme + LSUIElement
+├── Config.swift                   # syncURL, transcribeURL, recordingsDirectory
+├── Info.plist                     # URL scheme + LSUIElement + NSScreenCaptureUsageDescription
 ├── Models/
-│   ├── AppState.swift             # @Observable, meetings, recording state, cache UserDefaults
+│   ├── AppState.swift             # @Observable, meetings, recording state, AudioCaptureService, UploadService
 │   └── CalendarEvent.swift        # Codable model (Titre, DateStart, DateEnd, Lieu, Calendrier, participants...)
 ├── Services/
+│   ├── AudioCaptureService.swift  # ScreenCaptureKit + AVAssetWriter → capture audio système → M4A
+│   ├── UploadService.swift        # Upload multipart/form-data vers n8n (fichier + metadata)
 │   ├── SyncService.swift          # POST vers webhook, decode SyncResponse { calendar: [CalendarEvent] }
-│   └── URLSchemeHandler.swift     # .onOpenURL handler pour taskflowmac://
+│   └── URLSchemeHandler.swift     # .onOpenURL handler pour taskflowmac:// (start/stop/toggle/cancel)
 └── Views/
-    ├── MenuBarPopover.swift       # Vue principale : header date, liste réunions, footer
+    ├── MenuBarPopover.swift       # Vue principale : header date, recording/done/error banners, liste réunions, footer
     └── SettingsView.swift         # Fenêtre Settings (placeholder)
 ```
-
-## Phase 2 — À faire 🚧
-
-### Objectif
-Capture audio système (Teams/Zoom/Meet) via ScreenCaptureKit + transcription automatique via n8n/Whisper.
-
-### Flux cible
-1. Clic sur 🎤 (ou URL scheme `taskflowmac://start`) → démarre capture audio système via ScreenCaptureKit
-2. Clic sur ⏹ (ou `taskflowmac://stop`) → arrête capture, sauvegarde fichier audio (M4A)
-3. Upload multipart du fichier audio vers n8n workflow `lLIDlf1W4H1qNDeq` (TaskFlow Transcription Réunion)
-4. n8n envoie à Whisper/OpenAI pour transcription → stocke dans Notion
-
-### Défis techniques
-- **ScreenCaptureKit** : `SCStream` avec `SCStreamConfiguration.capturesAudio = true`
-- **Permission TCC** : macOS demandera l'autorisation Screen Recording
-- **Audio système** (pas micro) : capturer l'audio des apps de visio
-- **Encodage** : AVAssetWriter pour écrire le buffer audio en fichier M4A
-- **Upload** : multipart/form-data POST vers n8n avec le fichier + metadata (notionPageId, titre)
-- **Entitlements** : peut nécessiter `com.apple.security.temporary-exception.audio-unit-host` ou désactiver sandbox pour audio
-
-### Service à créer
-- `AudioCaptureService.swift` : gère SCStream, AVAssetWriter, start/stop
-- Modifier `AppState.swift` : brancher le vrai recording au lieu du simulé
-- Modifier `SyncService.swift` ou créer `UploadService.swift` : upload multipart vers n8n
 
 ## Workflows n8n
 
