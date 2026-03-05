@@ -3,15 +3,19 @@
 //  TaskFlowMac
 //
 //  Upload multipart/form-data du fichier audio vers n8n
-//  pour transcription via Whisper/OpenAI.
+//  pour transcription via Gemini.
 //
 //  Endpoint : Config.transcribeURL (webhook taskflow-transcribe)
 //  Workflow n8n : lLIDlf1W4H1qNDeq (TaskFlow Transcription Réunion)
 //
-//  Payload multipart :
-//    - file: le fichier M4A
+//  Le workflow attend :
+//    - audio: le fichier M4A (champ binaire nommé "audio")
+//    - eventTitle: titre de la réunion
 //    - notionPageId: ID de la page Notion de la réunion
-//    - titre: titre de la réunion
+//    - eventDate: date de l'événement
+//    - startDate: date/heure de début ISO8601
+//    - endDate: date/heure de fin ISO8601
+//    - participants: JSON des participants [{id, name, entreprise, fonction}]
 //    - source: "taskflow-mac"
 //
 
@@ -39,8 +43,7 @@ struct UploadService {
     /// Upload le fichier audio vers n8n pour transcription
     /// - Parameters:
     ///   - fileURL: URL du fichier M4A local
-    ///   - event: la réunion associée (pour notionPageId et titre)
-    /// - Returns: true si l'upload a réussi
+    ///   - event: la réunion associée (pour les métadonnées)
     func uploadAudio(fileURL: URL, event: CalendarEvent) async throws {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             throw UploadError.fileNotFound
@@ -57,23 +60,40 @@ struct UploadService {
         let boundary = "Boundary-\(UUID().uuidString)"
         var body = Data()
         
+        // Champ : eventTitle (nom attendu par le workflow n8n)
+        body.appendMultipartField(name: "eventTitle", value: event.displayTitle, boundary: boundary)
+        
         // Champ : notionPageId
         body.appendMultipartField(name: "notionPageId", value: event.notionPageId, boundary: boundary)
         
-        // Champ : titre
-        body.appendMultipartField(name: "titre", value: event.displayTitle, boundary: boundary)
+        // Champ : eventDate (date du jour formatée)
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        body.appendMultipartField(name: "eventDate", value: dateFormatter.string(from: Date()), boundary: boundary)
+        
+        // Champ : startDate (ISO8601)
+        body.appendMultipartField(name: "startDate", value: event.DateStart, boundary: boundary)
+        
+        // Champ : endDate (ISO8601)
+        if let dateEnd = event.DateEnd {
+            body.appendMultipartField(name: "endDate", value: dateEnd, boundary: boundary)
+        }
+        
+        // Champ : participants (JSON)
+        if let participants = event.allParticipants ?? event.participants {
+            if let jsonData = try? JSONEncoder().encode(participants),
+               let jsonString = String(data: jsonData, encoding: .utf8) {
+                body.appendMultipartField(name: "participants", value: jsonString, boundary: boundary)
+            }
+        }
         
         // Champ : source
         body.appendMultipartField(name: "source", value: "taskflow-mac", boundary: boundary)
         
-        // Champ : durée (si disponible)
-        if let duration = event.durationMinutes {
-            body.appendMultipartField(name: "duree", value: String(duration), boundary: boundary)
-        }
-        
-        // Fichier audio
+        // Fichier audio — IMPORTANT: le champ doit s'appeler "audio" (pas "file")
+        // Le workflow n8n cherche binaryData.audio
         body.appendMultipartFile(
-            name: "file",
+            name: "audio",
             filename: fileURL.lastPathComponent,
             mimeType: "audio/mp4",
             data: audioData,
