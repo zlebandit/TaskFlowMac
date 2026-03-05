@@ -322,11 +322,87 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
     private func createSampleBuffer(from pcmBuffer: AVAudioPCMBuffer, presentationTime: CMTime) -> CMSampleBuffer? {
         let frameCount = pcmBuffer.frameLength
         let format = pcmBuffer.format
+        let channels = Int(format.channelCount)
+        let frames = Int(frameCount)
         
-        guard let formatDescription = format.formatDescription as CMFormatDescription? else {
-            return nil
+        guard let channelData = pcmBuffer.floatChannelData, frames > 0 else { return nil }
+        
+        // Interleaver les données (AVAudioEngine fournit du non-interleaved par défaut)
+        let interleavedCount = frames * channels
+        var interleavedData = [Float](repeating: 0, count: interleavedCount)
+        
+        if format.isInterleaved {
+            // Copier directement
+            memcpy(&interleavedData, channelData[0], interleavedCount * MemoryLayout<Float>.size)
+        } else {
+            for frame in 0..<frames {
+                for ch in 0..<channels {
+                    interleavedData[frame * channels + ch] = channelData[ch][frame]
+                }
+            }
         }
         
+        let dataSize = interleavedCount * MemoryLayout<Float>.size
+        
+        // Créer le format description interleaved
+        var asbd = AudioStreamBasicDescription(
+            mSampleRate: format.sampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: UInt32(channels) * UInt32(MemoryLayout<Float>.size),
+            mFramesPerPacket: 1,
+            mBytesPerFrame: UInt32(channels) * UInt32(MemoryLayout<Float>.size),
+            mChannelsPerFrame: UInt32(channels),
+            mBitsPerChannel: UInt32(MemoryLayout<Float>.size * 8),
+            mReserved: 0
+        )
+        
+        var formatDescription: CMFormatDescription?
+        let fmtStatus = CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &asbd,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &formatDescription
+        )
+        guard fmtStatus == noErr, let fmtDesc = formatDescription else { return nil }
+        
+        // Créer le block buffer avec une copie des données
+        var blockBuffer: CMBlockBuffer?
+        let blockStatus = interleavedData.withUnsafeMutableBytes { rawBuffer -> OSStatus in
+            guard let baseAddress = rawBuffer.baseAddress else { return -1 }
+            return CMBlockBufferCreateWithMemoryBlock(
+                allocator: kCFAllocatorDefault,
+                memoryBlock: nil,
+                blockLength: dataSize,
+                blockAllocator: kCFAllocatorDefault,
+                customBlockSource: nil,
+                offsetToData: 0,
+                dataLength: dataSize,
+                flags: 0,
+                blockBufferOut: &blockBuffer
+            )
+        }
+        
+        guard blockStatus == noErr, let block = blockBuffer else { return nil }
+        
+        // Copier les données dans le block buffer
+        let copyStatus = interleavedData.withUnsafeBytes { rawBuffer -> OSStatus in
+            guard let baseAddress = rawBuffer.baseAddress else { return -1 }
+            return CMBlockBufferReplaceDataBytes(
+                with: baseAddress,
+                blockBuffer: block,
+                offsetIntoDestination: 0,
+                dataLength: dataSize
+            )
+        }
+        
+        guard copyStatus == noErr else { return nil }
+        
+        // Créer le CMSampleBuffer
         var sampleBuffer: CMSampleBuffer?
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: CMTimeValue(frameCount), timescale: CMTimeScale(format.sampleRate)),
@@ -334,122 +410,22 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
             decodeTimeStamp: .invalid
         )
         
-        // Obtenir les données PCM brutes
-        guard let channelData = pcmBuffer.floatChannelData else { return nil }
+        let sampleStatus = CMSampleBufferCreate(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: block,
+            dataReady: true,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: fmtDesc,
+            sampleCount: frames,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0,
+            sampleSizeArray: nil,
+            sampleBufferOut: &sampleBuffer
+        )
         
-        let channels = Int(format.channelCount)
-        let frames = Int(frameCount)
-        let bytesPerFrame = Int(format.streamDescription.pointee.mBytesPerFrame)
-        let totalBytes = frames * bytesPerFrame
-        
-        // Si interleaved, les données sont déjà dans le bon format
-        // Si non-interleaved (défaut AVAudioEngine), il faut interleaver
-        if format.isInterleaved {
-            // Données déjà interleavées
-            let data = Data(bytes: channelData[0], count: totalBytes)
-            
-            var blockBuffer: CMBlockBuffer?
-            data.withUnsafeBytes { rawPtr in
-                guard let baseAddress = rawPtr.baseAddress else { return }
-                CMBlockBufferCreateWithMemoryCopy(
-                    allocator: kCFAllocatorDefault,
-                    memoryBlock: UnsafeMutableRawPointer(mutating: baseAddress),
-                    blockLength: totalBytes,
-                    blockAllocator: kCFAllocatorNull,
-                    customBlockSource: nil,
-                    offsetToData: 0,
-                    dataLength: totalBytes,
-                    flags: 0,
-                    blockBufferOut: &blockBuffer
-                )
-            }
-            
-            guard let block = blockBuffer else { return nil }
-            
-            CMSampleBufferCreate(
-                allocator: kCFAllocatorDefault,
-                dataBuffer: block,
-                dataReady: true,
-                makeDataReadyCallback: nil,
-                refcon: nil,
-                formatDescription: formatDescription,
-                sampleCount: frames,
-                sampleTimingEntryCount: 1,
-                sampleTimingArray: &timing,
-                sampleSizeEntryCount: 0,
-                sampleSizeArray: nil,
-                sampleBufferOut: &sampleBuffer
-            )
-        } else {
-            // Non-interleaved: il faut interleaver pour l'encoder AAC
-            let interleavedSize = frames * channels * MemoryLayout<Float>.size
-            let interleavedData = UnsafeMutablePointer<Float>.allocate(capacity: frames * channels)
-            defer { interleavedData.deallocate() }
-            
-            for frame in 0..<frames {
-                for ch in 0..<channels {
-                    interleavedData[frame * channels + ch] = channelData[ch][frame]
-                }
-            }
-            
-            // Créer un format description interleaved pour le CMSampleBuffer
-            var interleavedASBD = AudioStreamBasicDescription(
-                mSampleRate: format.sampleRate,
-                mFormatID: kAudioFormatLinearPCM,
-                mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
-                mBytesPerPacket: UInt32(channels) * UInt32(MemoryLayout<Float>.size),
-                mFramesPerPacket: 1,
-                mBytesPerFrame: UInt32(channels) * UInt32(MemoryLayout<Float>.size),
-                mChannelsPerFrame: UInt32(channels),
-                mBitsPerChannel: UInt32(MemoryLayout<Float>.size * 8),
-                mReserved: 0
-            )
-            
-            var interleavedFormatDesc: CMFormatDescription?
-            CMAudioFormatDescriptionCreate(
-                allocator: kCFAllocatorDefault,
-                asbd: &interleavedASBD,
-                layoutSize: 0,
-                layout: nil,
-                magicCookieSize: 0,
-                magicCookie: nil,
-                extensions: nil,
-                formatDescriptionOut: &interleavedFormatDesc
-            )
-            
-            guard let iFormatDesc = interleavedFormatDesc else { return nil }
-            
-            var blockBuffer: CMBlockBuffer?
-            CMBlockBufferCreateWithMemoryCopy(
-                allocator: kCFAllocatorDefault,
-                memoryBlock: interleavedData,
-                blockLength: interleavedSize,
-                blockAllocator: kCFAllocatorNull,
-                customBlockSource: nil,
-                offsetToData: 0,
-                dataLength: interleavedSize,
-                flags: 0,
-                blockBufferOut: &blockBuffer
-            )
-            
-            guard let block = blockBuffer else { return nil }
-            
-            CMSampleBufferCreate(
-                allocator: kCFAllocatorDefault,
-                dataBuffer: block,
-                dataReady: true,
-                makeDataReadyCallback: nil,
-                refcon: nil,
-                formatDescription: iFormatDesc,
-                sampleCount: frames,
-                sampleTimingEntryCount: 1,
-                sampleTimingArray: &timing,
-                sampleSizeEntryCount: 0,
-                sampleSizeArray: nil,
-                sampleBufferOut: &sampleBuffer
-            )
-        }
-        
+        guard sampleStatus == noErr else { return nil }
         return sampleBuffer
     }
 }
