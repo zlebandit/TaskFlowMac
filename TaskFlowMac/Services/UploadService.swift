@@ -66,7 +66,12 @@ struct UploadService {
     // MARK: - Upload with Retry
     
     /// Upload le fichier audio vers n8n pour transcription, avec retry automatique.
-    func uploadAudio(fileURL: URL, event: CalendarEvent) async throws {
+    /// - Parameters:
+    ///   - fileURL: URL du fichier audio M4A
+    ///   - event: Réunion associée
+    ///   - recordingStartDate: Date ISO8601 de début d'enregistrement
+    ///   - recordingEndDate: Date ISO8601 de fin d'enregistrement
+    func uploadAudio(fileURL: URL, event: CalendarEvent, recordingStartDate: String, recordingEndDate: String) async throws {
         // 1. Valider le fichier
         try validateAudioFile(at: fileURL)
         
@@ -82,13 +87,10 @@ struct UploadService {
             ("eventTitle", event.displayTitle),
             ("notionPageId", event.notionPageId),
             ("eventDate", dateFormatter.string(from: Date())),
-            ("startDate", event.DateStart),
+            ("startDate", recordingStartDate),
+            ("endDate", recordingEndDate),
             ("source", "taskflow-mac")
         ]
-        
-        if let dateEnd = event.DateEnd {
-            fields.append(("endDate", dateEnd))
-        }
         
         if let participants = event.allParticipants ?? event.participants,
            let jsonData = try? JSONEncoder().encode(participants),

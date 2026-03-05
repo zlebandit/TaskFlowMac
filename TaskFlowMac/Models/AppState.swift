@@ -186,9 +186,9 @@ class AppState {
             return
         }
         
-        // Persister la date de fin et les participants pour recovery
-        let endDate = ISO8601DateFormatter().string(from: Date())
-        UserDefaults.standard.set(endDate, forKey: "recording.endDate")
+        // Persister la date de fin d'enregistrement et les participants pour recovery
+        let recordingEndDate = ISO8601DateFormatter().string(from: Date())
+        UserDefaults.standard.set(recordingEndDate, forKey: "recording.endDate")
         if let participants = event.allParticipants ?? event.participants,
            let jsonData = try? JSONEncoder().encode(participants),
            let jsonString = String(data: jsonData, encoding: .utf8) {
@@ -202,7 +202,10 @@ class AppState {
                 print("🎙️ ✅ Fichier audio prêt: \(fileURL.lastPathComponent)")
                 
                 // 2. Upload vers n8n (avec retry 3x)
-                try await uploadService.uploadAudio(fileURL: fileURL, event: event)
+                // startDate = début d'enregistrement, endDate = maintenant (fin d'enregistrement)
+                let startDate = self.recordingStartDate ?? ISO8601DateFormatter().string(from: Date())
+                let endDate = ISO8601DateFormatter().string(from: Date())
+                try await uploadService.uploadAudio(fileURL: fileURL, event: event, recordingStartDate: startDate, recordingEndDate: endDate)
                 print("🎙️ ✅ Upload réussi")
                 
                 // 3. Cleanup : fichier + état persisté
