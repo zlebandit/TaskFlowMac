@@ -63,6 +63,7 @@ class AppState {
            let cached = try? JSONDecoder().decode([CalendarEvent].self, from: data) {
             if Calendar.current.isDateInToday(lastSyncDate ?? .distantPast) {
                 meetings = cached
+                writeMeetingsJSONFile()
             }
         }
     }
