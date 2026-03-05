@@ -163,7 +163,7 @@ class AppState {
             [
                 "uid": event.id,
                 "title": event.displayTitle,
-                "subtitle": event.timeRange + (event.Lieu.map { " \u2014 \($0)" } ?? ""),
+                "subtitle": event.timeRange + (event.Lieu.map { " \u{2014} \($0)" } ?? ""),
                 "arg": event.id,
                 "icon": ["path": "icon.png"]
             ]
