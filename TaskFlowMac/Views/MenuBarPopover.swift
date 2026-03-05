@@ -535,6 +535,8 @@ struct MenuBarPopover: View {
         do {
             let meetings = try await SyncService().fetchMeetings()
             appState.meetings = meetings
+            appState.saveCacheToDisk()
+            appState.writeMeetingsJSONFile()
             appState.lastSyncDate = Date()
             print("\u{2705} Sync: \(meetings.count) réunions")
         } catch {
