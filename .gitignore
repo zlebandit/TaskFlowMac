@@ -21,3 +21,4 @@ build/
 
 # Backup files
 *.bak
+*.xcuserstate
