@@ -5,10 +5,14 @@
 //  Popover principal affiché quand on clique sur l'icône menubar.
 //  Affiche les réunions du jour et les contrôles d'enregistrement.
 //
-//  Contrôles enregistrement :
-//    - Bouton pause/resume (⏸/▶️)
-//    - Bouton stop (■) → arrête et lance transcription
-//    - Bouton annuler (✕) → supprime l'enregistrement
+//  UX Flow :
+//    - Idle : bouton 🎙 "Enregistrer" en haut + liste des réunions avec 🎤
+//    - Recording : banner rouge avec pause/stop/cancel
+//    - Paused : banner orange
+//    - Picking : sélecteur d'événement (liste cliquable) + bouton annuler
+//    - Uploading : spinner
+//    - Done : banner vert (3s)
+//    - Error : banner orange avec message
 //
 
 import SwiftUI
@@ -23,33 +27,46 @@ struct MenuBarPopover: View {
             
             Divider()
             
+            // MARK: - Picking Banner (sélection d'événement après stop)
+            if appState.recordingPhase == .picking {
+                pickingSection
+            }
+            
             // MARK: - Recording Banner (si actif)
-            if appState.isRecording || appState.recordingPhase == .uploading {
+            else if appState.isRecording || appState.recordingPhase == .uploading {
                 recordingBanner
                 Divider()
             }
             
-            // MARK: - Status Banner (done / error)
-            if case .done = appState.recordingPhase {
+            // MARK: - Status Banners
+            else if case .done = appState.recordingPhase {
                 doneBanner
                 Divider()
             }
-            if case .error(let msg) = appState.recordingPhase {
+            else if case .error(let msg) = appState.recordingPhase {
                 errorBanner(msg)
                 Divider()
             }
             
-            // MARK: - Meetings List
-            if appState.meetings.isEmpty && appState.isLoading {
-                ProgressView()
-                    .padding(20)
-            } else if appState.meetings.isEmpty {
-                emptyState
-            } else {
-                meetingsList
+            // MARK: - Bouton enregistrement libre (si idle)
+            else if appState.recordingPhase == .idle {
+                freeRecordButton
+                Divider()
             }
             
-            Divider()
+            // MARK: - Meetings List (sauf pendant picking)
+            if appState.recordingPhase != .picking {
+                if appState.meetings.isEmpty && appState.isLoading {
+                    ProgressView()
+                        .padding(20)
+                } else if appState.meetings.isEmpty {
+                    emptyState
+                } else {
+                    meetingsList
+                }
+                
+                Divider()
+            }
             
             // MARK: - Footer
             footerSection
@@ -83,6 +100,35 @@ struct MenuBarPopover: View {
         .padding(.vertical, 12)
     }
     
+    // MARK: - Free Record Button (idle)
+    
+    private var freeRecordButton: some View {
+        Button {
+            appState.startRecording()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "mic.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.red)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Enregistrer")
+                        .font(.subheadline.weight(.medium))
+                    Text("Démarrer un enregistrement libre")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+    
     // MARK: - Recording Banner
     
     private var recordingBanner: some View {
@@ -110,7 +156,7 @@ struct MenuBarPopover: View {
                         .lineLimit(1)
                 } else {
                     HStack(spacing: 6) {
-                        Text(appState.recordingEvent?.displayTitle ?? "Enregistrement")
+                        Text(appState.recordingEvent?.displayTitle ?? "Enregistrement libre")
                             .font(.subheadline.weight(.medium))
                             .lineLimit(1)
                         
@@ -170,7 +216,7 @@ struct MenuBarPopover: View {
                         .foregroundStyle(.red)
                 }
                 .buttonStyle(.plain)
-                .help("Arrêter et transcrire")
+                .help("Arrêter l'enregistrement")
             }
         }
         .padding(.horizontal, 16)
@@ -183,6 +229,99 @@ struct MenuBarPopover: View {
     }
     
     @State private var pulseOpacity: Double = 1.0
+    
+    // MARK: - Picking Section (sélection d'événement)
+    
+    private var pickingSection: some View {
+        VStack(spacing: 0) {
+            // Header picking
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle")
+                    .foregroundStyle(.green)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Enregistrement terminé")
+                        .font(.subheadline.weight(.medium))
+                    Text("À quelle réunion l'affecter ?")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    appState.cancelPicking()
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "trash")
+                            .font(.caption2)
+                        Text("Supprimer")
+                            .font(.caption)
+                    }
+                    .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+                .help("Supprimer l'enregistrement")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.green.opacity(0.08))
+            
+            Divider()
+            
+            // Liste des réunions (cliquables pour assigner)
+            if appState.meetings.isEmpty {
+                VStack(spacing: 6) {
+                    Text("Aucune réunion")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("Rafraîchis la liste ou supprime l'enregistrement")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 20)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(appState.meetings) { event in
+                        pickingRow(event: event)
+                        if event.id != appState.meetings.last?.id {
+                            Divider().padding(.leading, 16)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Ligne d'événement cliquable pour l'assignation
+    private func pickingRow(event: CalendarEvent) -> some View {
+        Button {
+            appState.assignEvent(event)
+        } label: {
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(accentColor(for: event))
+                    .frame(width: 3, height: 36)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(event.displayTitle)
+                        .font(.subheadline.weight(.medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                    
+                    Text(event.timeRange)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                
+                Spacer()
+                
+                Image(systemName: "arrow.up.circle")
+                    .foregroundStyle(.blue)
+                    .font(.body)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
     
     // MARK: - Done Banner
     
@@ -311,7 +450,6 @@ struct MenuBarPopover: View {
             
             // Bouton enregistrer / en cours
             if isRecordingThis {
-                // Déjà en cours — waveform animé ou pause
                 Image(systemName: appState.recordingPhase == .paused ? "pause.fill" : "waveform")
                     .foregroundStyle(appState.recordingPhase == .paused ? .orange : .red)
                     .font(.caption)
@@ -336,7 +474,7 @@ struct MenuBarPopover: View {
     
     private var footerSection: some View {
         HStack {
-            Text("\u{2318}\u{21e7}R démarre / arrête")
+            Text("dr / fr dans Alfred")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
             
@@ -378,7 +516,6 @@ struct MenuBarPopover: View {
             formatter.dateFormat = "EEEE d MMMM"
         }
         let raw = formatter.string(from: Date())
-        // Capitalize only first letter, keep month lowercase
         return raw.prefix(1).uppercased() + raw.dropFirst()
     }
     

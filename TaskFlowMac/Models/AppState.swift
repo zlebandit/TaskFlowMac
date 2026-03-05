@@ -5,12 +5,17 @@
 //  État global de l'application.
 //  Source de vérité unique pour les réunions et l'enregistrement.
 //
-//  Fonctionnalités :
-//    - Sync des réunions du jour (cache local)
-//    - Enregistrement audio micro avec pause/resume
-//    - Persistance de l'état d'enregistrement (survie crash/quit)
-//    - Auto-recovery au relancement (retry upload si fichier présent)
-//    - Nettoyage automatique des fichiers orphelins > 48h
+//  Flux d'enregistrement :
+//    1. startRecording() ou startRecording(for:) → capture micro
+//    2. (optionnel) pauseRecording() / resumeRecording()
+//    3. stopRecording() → arrête la capture, passe en .picking
+//    4. assignEvent(_:) → associe un événement et upload vers n8n
+//       OU cancelPicking() → annule et supprime le fichier
+//
+//  Deux modes de démarrage :
+//    - Libre (sans événement) : dr / bouton 🎙 en haut du popover
+//    - Associé à un événement : clic 🎤 sur une réunion spécifique
+//      (dans ce cas, stopRecording() upload directement sans phase picking)
 //
 
 import SwiftUI
@@ -64,7 +69,7 @@ class AppState {
     /// Phase d'enregistrement
     var recordingPhase: RecordingPhase = .idle
     
-    /// Réunion en cours d'enregistrement
+    /// Réunion en cours d'enregistrement (nil si enregistrement libre)
     var recordingEvent: CalendarEvent?
     
     /// Secondes écoulées (enregistrement effectif, sans les pauses)
@@ -82,8 +87,14 @@ class AppState {
     /// URL du fichier audio en cours d'enregistrement
     private var currentRecordingURL: URL?
     
+    /// URL du fichier audio finalisé (après stop, en attente d'assignation)
+    var finalizedAudioURL: URL?
+    
     /// Date de démarrage de l'enregistrement (ISO8601)
     private var recordingStartDate: String?
+    
+    /// Date de fin de l'enregistrement (ISO8601)
+    private var recordingEndDate: String?
     
     // MARK: - Computed
     
@@ -92,6 +103,11 @@ class AppState {
         case .recording, .paused: return true
         default: return false
         }
+    }
+    
+    /// Est-ce qu'on est en phase de sélection d'événement après stop ?
+    var isPicking: Bool {
+        recordingPhase == .picking
     }
     
     /// Réunion en cours (now entre start et end)
@@ -124,14 +140,63 @@ class AppState {
         return String(format: "%02d:%02d", m, s)
     }
     
+    /// JSON des réunions du jour (pour Alfred Script Filter)
+    var meetingsJSON: String {
+        let items = meetings.map { event -> [String: Any] in
+            [
+                "uid": event.id,
+                "title": event.displayTitle,
+                "subtitle": event.timeRange + (event.Lieu.map { " — \($0)" } ?? ""),
+                "arg": event.id,
+                "icon": ["path": "icon.png"]
+            ]
+        }
+        let result: [String: Any] = ["items": items]
+        guard let data = try? JSONSerialization.data(withJSONObject: result),
+              let json = String(data: data, encoding: .utf8) else {
+            return "{\"items\": []}"
+        }
+        return json
+    }
+    
     // MARK: - Recording Actions
     
-    /// Démarre la capture audio micro
+    /// Démarre la capture audio micro SANS événement (enregistrement libre)
+    func startRecording() {
+        recordingEvent = nil
+        recordingPhase = .recording
+        elapsedSeconds = 0
+        recordingStartDate = ISO8601DateFormatter().string(from: Date())
+        recordingEndDate = nil
+        finalizedAudioURL = nil
+        startTimer()
+        
+        // Persister l'état pour recovery (sans événement)
+        persistRecordingState(event: nil)
+        
+        Task { @MainActor in
+            do {
+                let fileURL = try await audioCaptureService.startCapture()
+                currentRecordingURL = fileURL
+                UserDefaults.standard.set(fileURL.path, forKey: "recording.audioFilePath")
+                print("🎙️ ✅ Capture libre démarrée → \(fileURL.lastPathComponent)")
+            } catch {
+                print("🎙️ ❌ Erreur démarrage capture: \(error.localizedDescription)")
+                recordingPhase = .error(error.localizedDescription)
+                stopTimer()
+                clearPersistedState()
+            }
+        }
+    }
+    
+    /// Démarre la capture audio micro AVEC un événement (mode classique)
     func startRecording(for event: CalendarEvent) {
         recordingEvent = event
         recordingPhase = .recording
         elapsedSeconds = 0
         recordingStartDate = ISO8601DateFormatter().string(from: Date())
+        recordingEndDate = nil
+        finalizedAudioURL = nil
         startTimer()
         
         // Persister l'état pour recovery
@@ -141,9 +206,8 @@ class AppState {
             do {
                 let fileURL = try await audioCaptureService.startCapture()
                 currentRecordingURL = fileURL
-                // Persister le chemin du fichier audio
                 UserDefaults.standard.set(fileURL.path, forKey: "recording.audioFilePath")
-                print("🎙️ ✅ Capture démarrée → \(fileURL.lastPathComponent)")
+                print("🎙️ ✅ Capture démarrée pour \(event.displayTitle) → \(fileURL.lastPathComponent)")
             } catch {
                 print("🎙️ ❌ Erreur démarrage capture: \(error.localizedDescription)")
                 recordingPhase = .error(error.localizedDescription)
@@ -176,56 +240,67 @@ class AppState {
         }
     }
     
-    /// Arrête la capture et lance l'upload vers n8n
+    /// Arrête la capture.
+    /// - Si un événement est déjà associé → upload directement
+    /// - Sinon → passe en phase .picking (sélection d'événement)
     func stopRecording() {
-        recordingPhase = .uploading
         stopTimer()
+        recordingEndDate = ISO8601DateFormatter().string(from: Date())
         
-        guard let event = recordingEvent else {
-            markError("Pas de réunion associée")
+        // Persister la date de fin pour recovery
+        UserDefaults.standard.set(recordingEndDate, forKey: "recording.endDate")
+        
+        if let event = recordingEvent {
+            // Mode classique : événement déjà associé → upload direct
+            recordingPhase = .uploading
+            persistParticipants(event: event)
+            finalizeAndUpload(event: event)
+        } else {
+            // Mode libre : finaliser le fichier et passer en picking
+            recordingPhase = .uploading // temporaire pendant la finalisation
+            Task { @MainActor in
+                do {
+                    let fileURL = try await audioCaptureService.stopCapture()
+                    self.finalizedAudioURL = fileURL
+                    self.recordingPhase = .picking
+                    print("🎙️ ✅ Fichier audio prêt, en attente d'affectation: \(fileURL.lastPathComponent)")
+                } catch {
+                    print("🎙️ ❌ Erreur finalisation: \(error.localizedDescription)")
+                    self.markError(error.localizedDescription)
+                }
+            }
+        }
+    }
+    
+    /// Assigne un événement au fichier audio finalisé et lance l'upload
+    func assignEvent(_ event: CalendarEvent) {
+        guard recordingPhase == .picking, let fileURL = finalizedAudioURL else {
+            print("🎙️ ⚠️ assignEvent appelé hors phase picking")
             return
         }
         
-        // Persister la date de fin d'enregistrement et les participants pour recovery
-        let recordingEndDate = ISO8601DateFormatter().string(from: Date())
-        UserDefaults.standard.set(recordingEndDate, forKey: "recording.endDate")
-        if let participants = event.allParticipants ?? event.participants,
-           let jsonData = try? JSONEncoder().encode(participants),
-           let jsonString = String(data: jsonData, encoding: .utf8) {
-            UserDefaults.standard.set(jsonString, forKey: "recording.participantsJSON")
-        }
+        recordingEvent = event
+        recordingPhase = .uploading
         
-        Task { @MainActor in
-            do {
-                // 1. Arrêter la capture → fichier M4A finalisé
-                let fileURL = try await audioCaptureService.stopCapture()
-                print("🎙️ ✅ Fichier audio prêt: \(fileURL.lastPathComponent)")
-                
-                // 2. Upload vers n8n (avec retry 3x)
-                // startDate = début d'enregistrement, endDate = maintenant (fin d'enregistrement)
-                let startDate = self.recordingStartDate ?? ISO8601DateFormatter().string(from: Date())
-                let endDate = ISO8601DateFormatter().string(from: Date())
-                try await uploadService.uploadAudio(fileURL: fileURL, event: event, recordingStartDate: startDate, recordingEndDate: endDate)
-                print("🎙️ ✅ Upload réussi")
-                
-                // 3. Cleanup : fichier + état persisté
-                uploadService.cleanupFile(at: fileURL)
-                currentRecordingURL = nil
-                clearPersistedState()
-                
-                // 4. Marquer comme terminé
-                markDone()
-                
-            } catch let captureError as AudioCaptureError {
-                print("🎙️ ⚠️ Erreur capture: \(captureError.localizedDescription)")
-                markError(captureError.localizedDescription ?? "Erreur de capture audio")
-                // Ne pas clear l'état persisté — le fichier sera récupéré au relancement
-            } catch {
-                print("🎙️ ❌ Erreur stop/upload: \(error.localizedDescription)")
-                markError(error.localizedDescription)
-                // État persisté conservé pour retry au relancement
-            }
+        // Persister pour recovery
+        persistRecordingState(event: event)
+        UserDefaults.standard.set(fileURL.path, forKey: "recording.audioFilePath")
+        persistParticipants(event: event)
+        
+        print("🎙️ 📎 Enregistrement assigné à: \(event.displayTitle) → upload...")
+        uploadFinalizedFile(fileURL: fileURL, event: event)
+    }
+    
+    /// Annule la phase de picking (supprime le fichier audio)
+    func cancelPicking() {
+        guard recordingPhase == .picking else { return }
+        
+        if let fileURL = finalizedAudioURL {
+            uploadService.cleanupFile(at: fileURL)
         }
+        clearPersistedState()
+        reset()
+        print("🎙️ 🗑️ Enregistrement supprimé (picking annulé)")
     }
     
     func markDone() {
@@ -244,7 +319,9 @@ class AppState {
         recordingEvent = nil
         elapsedSeconds = 0
         currentRecordingURL = nil
+        finalizedAudioURL = nil
         recordingStartDate = nil
+        recordingEndDate = nil
         stopTimer()
     }
     
@@ -255,6 +332,63 @@ class AppState {
             await audioCaptureService.cancelCapture()
             clearPersistedState()
             reset()
+        }
+    }
+    
+    // MARK: - Private Upload Helpers
+    
+    /// Finalise la capture et uploade directement (mode avec événement pré-associé)
+    private func finalizeAndUpload(event: CalendarEvent) {
+        Task { @MainActor in
+            do {
+                let fileURL = try await audioCaptureService.stopCapture()
+                print("🎙️ ✅ Fichier audio prêt: \(fileURL.lastPathComponent)")
+                
+                let startDate = self.recordingStartDate ?? ISO8601DateFormatter().string(from: Date())
+                let endDate = self.recordingEndDate ?? ISO8601DateFormatter().string(from: Date())
+                try await uploadService.uploadAudio(fileURL: fileURL, event: event, recordingStartDate: startDate, recordingEndDate: endDate)
+                print("🎙️ ✅ Upload réussi")
+                
+                uploadService.cleanupFile(at: fileURL)
+                currentRecordingURL = nil
+                clearPersistedState()
+                markDone()
+                
+            } catch {
+                print("🎙️ ❌ Erreur stop/upload: \(error.localizedDescription)")
+                markError(error.localizedDescription)
+            }
+        }
+    }
+    
+    /// Upload un fichier déjà finalisé (après assignation d'événement)
+    private func uploadFinalizedFile(fileURL: URL, event: CalendarEvent) {
+        Task { @MainActor in
+            do {
+                let startDate = self.recordingStartDate ?? ISO8601DateFormatter().string(from: Date())
+                let endDate = self.recordingEndDate ?? ISO8601DateFormatter().string(from: Date())
+                try await uploadService.uploadAudio(fileURL: fileURL, event: event, recordingStartDate: startDate, recordingEndDate: endDate)
+                print("🎙️ ✅ Upload réussi pour: \(event.displayTitle)")
+                
+                uploadService.cleanupFile(at: fileURL)
+                finalizedAudioURL = nil
+                currentRecordingURL = nil
+                clearPersistedState()
+                markDone()
+                
+            } catch {
+                print("🎙️ ❌ Erreur upload: \(error.localizedDescription)")
+                markError(error.localizedDescription)
+            }
+        }
+    }
+    
+    /// Persiste les participants d'un événement pour recovery
+    private func persistParticipants(event: CalendarEvent) {
+        if let participants = event.allParticipants ?? event.participants,
+           let jsonData = try? JSONEncoder().encode(participants),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            UserDefaults.standard.set(jsonString, forKey: "recording.participantsJSON")
         }
     }
     
@@ -270,14 +404,14 @@ class AppState {
     private static let kIsActive = "recording.isActive"
     
     /// Persiste l'état d'enregistrement
-    private func persistRecordingState(event: CalendarEvent) {
+    private func persistRecordingState(event: CalendarEvent?) {
         let defaults = UserDefaults.standard
-        defaults.set(event.id, forKey: Self.kEventId)
-        defaults.set(event.displayTitle, forKey: Self.kEventTitle)
-        defaults.set(event.notionPageId, forKey: Self.kNotionPageId)
+        defaults.set(event?.id ?? "free-recording", forKey: Self.kEventId)
+        defaults.set(event?.displayTitle ?? "Enregistrement libre", forKey: Self.kEventTitle)
+        defaults.set(event?.notionPageId ?? "", forKey: Self.kNotionPageId)
         defaults.set(recordingStartDate, forKey: Self.kStartDate)
         defaults.set(true, forKey: Self.kIsActive)
-        print("🎙️ 💾 État enregistrement persisté (event: \(event.displayTitle))")
+        print("🎙️ 💾 État persisté (event: \(event?.displayTitle ?? "libre"))")
     }
     
     /// Supprime l'état persisté
@@ -304,9 +438,9 @@ class AppState {
     }
     
     /// Vérifie si un enregistrement interrompu peut être récupéré.
-    /// Ne retourne rien si un enregistrement est actuellement en cours (évite de supprimer le fichier actif).
+    /// Ne retourne rien si un enregistrement est actuellement en cours.
     func checkForRecovery() -> RecoveredRecording? {
-        // GUARD: ne pas interférer avec un enregistrement actif
+        // GUARD: ne pas interférer avec un enregistrement actif ou un picking
         guard !isRecording, recordingPhase == .idle else {
             print("🎙️ ⏭ Recovery ignorée : enregistrement en cours")
             return nil
@@ -315,12 +449,12 @@ class AppState {
         let defaults = UserDefaults.standard
         guard defaults.bool(forKey: Self.kIsActive),
               let eventTitle = defaults.string(forKey: Self.kEventTitle),
-              let notionPageId = defaults.string(forKey: Self.kNotionPageId),
               let audioFilePath = defaults.string(forKey: Self.kAudioFilePath),
               let startDate = defaults.string(forKey: Self.kStartDate) else {
             return nil
         }
         
+        let notionPageId = defaults.string(forKey: Self.kNotionPageId) ?? ""
         let endDate = defaults.string(forKey: Self.kEndDate) ?? ISO8601DateFormatter().string(from: Date())
         let participantsJSON = defaults.string(forKey: Self.kParticipantsJSON) ?? "[]"
         
@@ -341,6 +475,17 @@ class AppState {
         
         let sizeMB = Double(size) / 1_048_576
         print("🎙️ 🔄 Enregistrement récupérable trouvé: \(eventTitle) (\(String(format: "%.1f", sizeMB)) MB)")
+        
+        // Si c'était un enregistrement libre (pas encore assigné), passer en picking
+        if notionPageId.isEmpty {
+            print("🎙️ 🔄 Enregistrement libre récupéré → phase picking")
+            finalizedAudioURL = URL(fileURLWithPath: audioFilePath)
+            recordingStartDate = startDate
+            recordingEndDate = endDate
+            recordingPhase = .picking
+            return nil // Pas de recovery auto — l'utilisateur va choisir l'événement
+        }
+        
         return RecoveredRecording(
             eventTitle: eventTitle,
             notionPageId: notionPageId,
@@ -372,7 +517,6 @@ class AppState {
                     participantsJSON: recovered.participantsJSON
                 )
                 
-                // Succès → cleanup
                 uploadService.cleanupFile(at: fileURL)
                 clearPersistedState()
                 print("🎙️ ✅ Recovery upload réussi pour: \(recovered.eventTitle)")
@@ -380,7 +524,6 @@ class AppState {
                 
             } catch {
                 print("🎙️ ❌ Recovery upload échoué: \(error.localizedDescription)")
-                // L'état persisté reste — on réessaiera au prochain lancement
                 markError("Upload échoué : \(recovered.eventTitle). Sera réessayé au prochain lancement.")
             }
         }
@@ -416,13 +559,14 @@ enum RecordingPhase: Equatable {
     case recording
     case paused
     case uploading
+    case picking    // En attente de sélection d'événement après stop
     case done
     case error(String)
     
     static func == (lhs: RecordingPhase, rhs: RecordingPhase) -> Bool {
         switch (lhs, rhs) {
         case (.idle, .idle), (.recording, .recording), (.paused, .paused),
-             (.uploading, .uploading), (.done, .done):
+             (.uploading, .uploading), (.picking, .picking), (.done, .done):
             return true
         case (.error(let a), .error(let b)):
             return a == b

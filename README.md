@@ -37,8 +37,19 @@ App macOS MenuBar pour afficher les réunions du jour et enregistrer/transcrire 
 - **Persistance état** : survie crash/quit via UserDefaults
 - **Auto-recovery** : au relancement, détecte un enregistrement interrompu et retente l'upload
 - **Nettoyage automatique** : fichiers orphelins > 48h supprimés au lancement
-- **Boutons UI** : pause ⏸ / resume ▶️ / stop ⏹ / annuler ✕ dans le popover
 - **Indicateurs visuels** : badge PAUSE orange, badge REC rouge, icône menubar contextuelle
+
+### Phase 4 ✅ — Enregistrement libre + Alfred dr/fr
+- **Enregistrement libre** : démarrer sans affecter à une réunion (bouton 🎙 dans le popover ou `dr` dans Alfred)
+- **Phase picking** : après l'arrêt d'un enregistrement libre, sélection de la réunion dans l'app ou via Alfred
+- **Deux modes de démarrage** :
+  - Libre (sans événement) → `taskflowmac://record` ou bouton 🎙
+  - Associé à une réunion → clic 🎤 sur une réunion ou `taskflowmac://start`
+- **Workflow Alfred dr/fr** :
+  - `dr` (début de réunion) → lance un enregistrement libre
+  - `fr` (fin de réunion) → stoppe, affiche la liste des réunions, sélection → upload
+- **UX picking dans l'app** : écran dédié avec liste des réunions cliquables + bouton supprimer
+- **Recovery intelligente** : les enregistrements libres interrompus passent en picking au relancement
 
 ## URL Schemes
 
@@ -46,31 +57,67 @@ Pilotage depuis Alfred, Terminal, ou raccourcis clavier :
 
 | Commande | URL | Description |
 |----------|-----|-------------|
-| Start | `taskflowmac://start` | Démarre l'enregistrement (réunion en cours > prochaine) |
-| Stop | `taskflowmac://stop` | Arrête et envoie pour transcription |
-| Toggle | `taskflowmac://toggle` | Start si idle, Stop si recording |
+| Record | `taskflowmac://record` | Enregistrement libre (sans événement) |
+| Start | `taskflowmac://start` | Enregistrement auto (réunion en cours > prochaine) |
+| Stop | `taskflowmac://stop` | Arrête l'enregistrement |
+| Toggle | `taskflowmac://toggle` | Record si idle, Stop si recording |
 | Pause | `taskflowmac://pause` | Met en pause l'enregistrement |
 | Resume | `taskflowmac://resume` | Reprend après pause |
 | Pause Toggle | `taskflowmac://pausetoggle` | Pause si recording, Resume si paused |
 | Cancel | `taskflowmac://cancel` | Annule l'enregistrement (supprime le fichier) |
+| Assign | `taskflowmac://assign?id=X` | Assigne l'événement X au fichier en attente |
+| Meetings | `taskflowmac://meetings` | Écrit le JSON des meetings dans /tmp (pour Alfred) |
 | Status | `taskflowmac://status` | Log l'état actuel (debug) |
 
 ### Utilisation en Terminal
 ```bash
-open "taskflowmac://toggle"        # Démarre ou arrête
-open "taskflowmac://pausetoggle"   # Pause ou reprend
-open "taskflowmac://cancel"        # Annule
+open "taskflowmac://record"         # Enregistrement libre
+open "taskflowmac://stop"           # Arrêter
+open "taskflowmac://pausetoggle"    # Pause ou reprend
+open "taskflowmac://cancel"         # Annuler
 ```
 
 ## Intégration Alfred
 
-Un workflow Alfred est fourni dans `alfred/TaskFlowMac.alfredworkflow`.
+Voir `alfred/README.md` pour le guide complet.
 
-**Raccourcis configurés :**
-- `⌘⇧R` → Toggle enregistrement (start/stop)
-- `⌘⇧P` → Toggle pause (pause/resume)
+**Flux recommandé :**
+```
+⌘Space → dr → Entrée → Enregistrement démarre
+⌘Space → fr → Entrée → Stop → Liste réunions → Sélection → Upload
+```
+
+**Raccourcis optionnels :**
+- `⌘⇧P` → Toggle pause/resume
 - `⌘⇧X` → Annuler l'enregistrement
-- Keyword `tf` → Liste des commandes TaskFlowMac
+
+## Flux d'enregistrement
+
+### Mode libre (dr / bouton 🎙)
+```
+1. dr dans Alfred ou bouton 🎙 dans le popover
+   └─→ AVAudioEngine démarre le tap micro
+   └─→ État persisté (event = nil)
+
+2. (Optionnel) pause / resume
+
+3. fr dans Alfred ou bouton ⏹ dans le popover
+   └─→ Finalise le fichier M4A
+   └─→ Phase "picking" : l'app affiche les réunions
+   └─→ Sélection d'une réunion → upload vers n8n
+
+4. Si crash pendant picking :
+   └─→ Au relancement : fichier + état → retour en picking
+```
+
+### Mode associé (clic 🎤 sur une réunion)
+```
+1. Clic 🎤 sur une réunion
+   └─→ AVAudioEngine démarre
+   └─→ État persisté (event associé)
+
+2. Stop → Upload direct (pas de picking)
+```
 
 ## Fichiers Swift
 
@@ -81,39 +128,16 @@ TaskFlowMac/
 ├── Info.plist                     # URL scheme + LSUIElement + NSMicrophoneUsageDescription
 ├── TaskFlowMac.entitlements       # App Sandbox + Outgoing Connections + Microphone
 ├── Models/
-│   ├── AppState.swift             # État global : meetings, recording, pause/resume, persistance, recovery
+│   ├── AppState.swift             # État global : meetings, recording libre/associé, picking, recovery
 │   └── CalendarEvent.swift        # Codable model (Titre, DateStart, DateEnd, Lieu, participants...)
 ├── Services/
 │   ├── AudioCaptureService.swift  # AVAudioEngine + AVAssetWriter → micro → M4A (pause/resume, cleanup)
 │   ├── UploadService.swift        # Upload multipart streaming + retry 3x backoff + recovery upload
 │   ├── SyncService.swift          # Fetch réunions du jour via webhook n8n
-│   └── URLSchemeHandler.swift     # Handler URL schemes (start/stop/toggle/pause/resume/cancel/status)
+│   └── URLSchemeHandler.swift     # Handler URL schemes (record/start/stop/assign/meetings/...)
 └── Views/
-    ├── MenuBarPopover.swift       # Vue principale : banners, boutons pause/resume/cancel/stop, liste réunions
+    ├── MenuBarPopover.swift       # Vue principale : banners, bouton 🎙 libre, picking, liste réunions
     └── SettingsView.swift         # Fenêtre Settings (placeholder)
-```
-
-## Flux d'enregistrement
-
-```
-1. Clic 🎤 ou taskflowmac://start
-   └─→ AVAudioEngine démarre le tap micro
-   └─→ AVAssetWriter encode en M4A (AAC 128kbps)
-   └─→ État persisté dans UserDefaults
-
-2. (Optionnel) taskflowmac://pause / resume
-   └─→ Engine en pause, buffers ignorés
-   └─→ Timestamps ajustés (pas de silence dans le fichier)
-
-3. Clic ⏹ ou taskflowmac://stop
-   └─→ Finalise le fichier M4A
-   └─→ Upload multipart vers n8n (retry 3x)
-   └─→ Cleanup fichier local + état persisté
-
-4. Si crash/quit pendant enregistrement :
-   └─→ Au relancement : détecte fichier + état persisté
-   └─→ Auto-retry upload silencieux
-   └─→ Fichiers orphelins > 48h nettoyés automatiquement
 ```
 
 ## Workflows n8n
@@ -136,7 +160,7 @@ TaskFlowMac/
 2. **Add Files to Project** si nouveaux fichiers Swift
 3. Vérifier **Signing & Capabilities** : App Sandbox + Outgoing Connections
 4. **Build & Run** (⌘R) — macOS demandera la permission Microphone au premier lancement
-5. Installer le workflow Alfred depuis `alfred/TaskFlowMac.alfredworkflow`
+5. Configurer le workflow Alfred (voir `alfred/README.md`)
 
 ## Connexions MCP disponibles
 
