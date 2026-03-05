@@ -2,9 +2,9 @@
 # Alfred Script Filter pour "fr" (fin de réunion)
 #
 # Lit le fichier JSON des réunions maintenu par l'app à chaque sync/lancement.
-# Le fichier est dans /tmp/ car l'app est sandboxée (home ≠ $HOME).
+# L'app n'est plus sandboxée → le fichier est dans $HOME.
 
-JSON_FILE="/tmp/.taskflowmac-meetings.json"
+JSON_FILE="$HOME/.taskflowmac-meetings.json"
 
 if [ -f "$JSON_FILE" ]; then
     cat "$JSON_FILE"
