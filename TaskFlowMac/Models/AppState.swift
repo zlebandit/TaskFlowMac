@@ -166,10 +166,10 @@ class AppState {
                 // 4. Marquer comme terminé
                 markDone()
                 
-            } catch is AudioCaptureError {
+            } catch let captureError as AudioCaptureError {
                 // Erreur de capture (noAudioCaptured, permissionDenied, etc.)
-                print("🎙️ ⚠️ Erreur capture: \(error.localizedDescription)")
-                markError(error.localizedDescription)
+                print("🎙️ ⚠️ Erreur capture: \(captureError.localizedDescription)")
+                markError(captureError.localizedDescription ?? "Erreur de capture audio")
             } catch {
                 print("🎙️ ❌ Erreur stop/upload: \(error.localizedDescription)")
                 markError(error.localizedDescription)
