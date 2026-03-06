@@ -3,33 +3,49 @@
 //  TaskFlowMac
 //
 //  Fenêtre de réglages (accès via Settings dans le menu).
-//  Pour l'instant minimaliste : juste les infos et permissions.
 //
 
 import SwiftUI
+import ServiceManagement
 
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     
     var body: some View {
         Form {
-            Section("G\u{00e9}n\u{00e9}ral") {
+            Section("Général") {
+                Toggle("Lancer au démarrage du Mac", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, newValue in
+                        do {
+                            if newValue {
+                                try SMAppService.mainApp.register()
+                            } else {
+                                try SMAppService.mainApp.unregister()
+                            }
+                        } catch {
+                            print("SMAppService error: \(error)")
+                            // Revert toggle si erreur
+                            launchAtLogin = SMAppService.mainApp.status == .enabled
+                        }
+                    }
+                
                 LabeledContent("Version", value: "1.0.0")
                 LabeledContent("Serveur", value: Config.n8nBaseURL)
             }
             
             Section("Raccourcis") {
-                Text("Utilisez Alfred ou un autre launcher pour d\u{00e9}clencher :")
+                Text("Utilisez Alfred ou un autre launcher pour déclencher :")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 
-                LabeledContent("D\u{00e9}marrer") {
+                LabeledContent("Démarrer") {
                     Text("open taskflowmac://start")
                         .font(.caption.monospaced())
                         .textSelection(.enabled)
                 }
                 
-                LabeledContent("Arr\u{00ea}ter") {
+                LabeledContent("Arrêter") {
                     Text("open taskflowmac://stop")
                         .font(.caption.monospaced())
                         .textSelection(.enabled)
@@ -43,16 +59,16 @@ struct SettingsView: View {
             }
             
             Section("Permissions") {
-                Text("L'enregistrement audio syst\u{00e8}me n\u{00e9}cessite l'autorisation \"Enregistrement de l'\u{00e9}cran\" dans Pr\u{00e9}f\u{00e9}rences Syst\u{00e8}me > Confidentialit\u{00e9}.")
+                Text("L'enregistrement audio système nécessite l'autorisation \"Enregistrement de l'écran\" dans Préférences Système > Confidentialité.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 
-                Button("Ouvrir les pr\u{00e9}f\u{00e9}rences") {
+                Button("Ouvrir les préférences") {
                     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
                 }
             }
         }
         .formStyle(.grouped)
-        .frame(width: 450, height: 350)
+        .frame(width: 450, height: 400)
     }
 }
