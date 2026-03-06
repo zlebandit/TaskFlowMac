@@ -460,7 +460,7 @@ struct MenuBarPopover: View {
     
     private func meetingRow(event: CalendarEvent) -> some View {
         let isOngoing = isEventOngoing(event)
-        let isRecordingThis = appState.recordingEvent?.id == event.id
+        let isRecordingThis = appState.recordingEvent?.id == event.id && appState.isRecording
         
         return HStack(spacing: 10) {
             // Barre colorée
