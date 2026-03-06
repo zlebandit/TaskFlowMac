@@ -50,6 +50,10 @@ struct MenuBarPopover: View {
             
             // MARK: - Bouton enregistrement libre (si idle)
             else if appState.recordingPhase == .idle {
+                if appState.pendingUpload != nil {
+                    pendingUploadBanner
+                    Divider()
+                }
                 freeRecordButton
                 Divider()
             }
@@ -74,6 +78,9 @@ struct MenuBarPopover: View {
         .frame(width: 380)
         .task {
             await loadMeetingsIfNeeded()
+        }
+        .onAppear {
+            appState.checkPendingUpload()
         }
     }
     
@@ -354,12 +361,70 @@ struct MenuBarPopover: View {
             Spacer()
             Button {
                 appState.reset()
+                appState.retryPendingUpload()
+            } label: {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.blue)
+            }
+            .buttonStyle(.plain)
+            .help("Réessayer")
+            
+            Button {
+                appState.reset()
             } label: {
                 Image(systemName: "xmark.circle")
                     .font(.body)
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .help("Fermer")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.orange.opacity(0.08))
+    }
+    
+    // MARK: - Pending Upload Banner
+    
+    private var pendingUploadBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.arrow.circlepath")
+                .foregroundStyle(.orange)
+                .font(.body)
+            
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Fichier en attente d'envoi")
+                    .font(.subheadline.weight(.medium))
+                if let pending = appState.pendingUpload {
+                    Text("\(pending.eventTitle) — \(String(format: "%.1f", pending.fileSizeMB)) MB")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            
+            Spacer()
+            
+            Button {
+                appState.retryPendingUpload()
+            } label: {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.blue)
+            }
+            .buttonStyle(.plain)
+            .help("Réessayer l'envoi")
+            
+            Button {
+                appState.discardPendingUpload()
+            } label: {
+                Image(systemName: "trash.circle")
+                    .font(.title3)
+                    .foregroundStyle(.red.opacity(0.7))
+            }
+            .buttonStyle(.plain)
+            .help("Supprimer le fichier")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)

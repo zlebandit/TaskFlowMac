@@ -116,6 +116,25 @@ class AppState {
     /// Date de fin de l'enregistrement (ISO8601)
     private var recordingEndDate: String?
     
+    // MARK: - Pending Upload
+    
+    /// Données d'un fichier audio en attente d'upload
+    struct PendingUpload {
+        let eventTitle: String
+        let notionPageId: String
+        let audioFilePath: String
+        let startDate: String
+        let endDate: String
+        let participantsJSON: String
+        let fileSizeMB: Double
+    }
+    
+    /// Fichier en attente d'upload (détecté au lancement ou après erreur)
+    var pendingUpload: PendingUpload?
+    
+    /// Indique si un retry du pending upload est en cours
+    var isRetryingPendingUpload = false
+    
     // MARK: - Computed
     
     var isRecording: Bool {
@@ -366,6 +385,8 @@ class AppState {
         recordingStartDate = nil
         recordingEndDate = nil
         stopTimer()
+        // Vérifier s'il y a un fichier en attente d'upload
+        checkPendingUpload()
     }
     
     /// Annule l'enregistrement en cours
@@ -376,6 +397,106 @@ class AppState {
             clearPersistedState()
             reset()
         }
+    }
+    
+    // MARK: - Pending Upload Management
+    
+    /// Vérifie s'il y a un fichier audio en attente d'upload.
+    /// Lit les UserDefaults et vérifie que le fichier existe encore.
+    /// À appeler à chaque ouverture du popover.
+    func checkPendingUpload() {
+        guard !isRecording,
+              recordingPhase == .idle || recordingPhase == .done else {
+            pendingUpload = nil
+            return
+        }
+        
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: Self.kIsActive),
+              let audioFilePath = defaults.string(forKey: Self.kAudioFilePath),
+              FileManager.default.fileExists(atPath: audioFilePath) else {
+            pendingUpload = nil
+            return
+        }
+        
+        let eventTitle = defaults.string(forKey: Self.kEventTitle) ?? "Enregistrement"
+        let notionPageId = defaults.string(forKey: Self.kNotionPageId) ?? ""
+        let startDate = defaults.string(forKey: Self.kStartDate) ?? ""
+        let endDate = defaults.string(forKey: Self.kEndDate) ?? ISO8601DateFormatter().string(from: Date())
+        let participantsJSON = defaults.string(forKey: Self.kParticipantsJSON) ?? "[]"
+        
+        let size = (try? FileManager.default.attributesOfItem(atPath: audioFilePath)[.size] as? Int) ?? 0
+        guard size > 10_240 else {
+            try? FileManager.default.removeItem(atPath: audioFilePath)
+            clearPersistedState()
+            pendingUpload = nil
+            return
+        }
+        
+        pendingUpload = PendingUpload(
+            eventTitle: eventTitle,
+            notionPageId: notionPageId,
+            audioFilePath: audioFilePath,
+            startDate: startDate,
+            endDate: endDate,
+            participantsJSON: participantsJSON,
+            fileSizeMB: Double(size) / 1_048_576
+        )
+    }
+    
+    /// Réessaie l'upload du fichier en attente
+    func retryPendingUpload() {
+        guard let pending = pendingUpload else { return }
+        
+        // Enregistrement libre (pas encore assigné) → phase picking
+        if pending.notionPageId.isEmpty {
+            finalizedAudioURL = URL(fileURLWithPath: pending.audioFilePath)
+            recordingStartDate = pending.startDate
+            recordingEndDate = pending.endDate
+            recordingPhase = .picking
+            pendingUpload = nil
+            return
+        }
+        
+        recordingPhase = .uploading
+        isRetryingPendingUpload = true
+        pendingUpload = nil
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let eventDate = dateFormatter.string(from: Date())
+        
+        Task { @MainActor in
+            do {
+                let fileURL = URL(fileURLWithPath: pending.audioFilePath)
+                try await uploadService.uploadRecoveredAudio(
+                    fileURL: fileURL,
+                    eventTitle: pending.eventTitle,
+                    notionPageId: pending.notionPageId,
+                    eventDate: eventDate,
+                    startDate: pending.startDate,
+                    endDate: pending.endDate,
+                    participantsJSON: pending.participantsJSON
+                )
+                
+                uploadService.cleanupFile(at: fileURL)
+                clearPersistedState()
+                isRetryingPendingUpload = false
+                markDone()
+                
+            } catch {
+                isRetryingPendingUpload = false
+                markError(error.localizedDescription)
+            }
+        }
+    }
+    
+    /// Supprime définitivement le fichier en attente d'upload
+    func discardPendingUpload() {
+        guard let pending = pendingUpload else { return }
+        try? FileManager.default.removeItem(atPath: pending.audioFilePath)
+        clearPersistedState()
+        pendingUpload = nil
     }
     
     // MARK: - Private Upload Helpers

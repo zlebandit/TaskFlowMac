@@ -39,8 +39,7 @@ struct TaskFlowMacApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var appState = AppState()
     
-    /// Flag pour ne vérifier la recovery qu'une seule fois
-    @State private var hasCheckedRecovery = false
+
     
     init() {
         // Nettoyage des fichiers orphelins > 48h au lancement
@@ -56,8 +55,8 @@ struct TaskFlowMacApp: App {
                     if appDelegate.urlSchemeHandler == nil {
                         appDelegate.setup(appState: appState)
                     }
-                    // Recovery : une seule fois
-                    checkForRecoveredRecordingOnce()
+                    // Vérifier s'il y a des fichiers en attente d'upload
+                    appState.checkPendingUpload()
                 }
         } label: {
             menuBarLabel
@@ -101,13 +100,5 @@ struct TaskFlowMacApp: App {
     
     // MARK: - Recovery (une seule fois)
     
-    private func checkForRecoveredRecordingOnce() {
-        guard !hasCheckedRecovery else { return }
-        hasCheckedRecovery = true
-        
-        guard let recovered = appState.checkForRecovery() else { return }
-        
-        print("🎙️ 🔄 Enregistrement récupéré trouvé: \(recovered.eventTitle)")
-        appState.retryRecoveredRecording(recovered)
-    }
+
 }
