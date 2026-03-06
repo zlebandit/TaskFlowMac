@@ -116,21 +116,40 @@ class AppState {
     /// Date de fin de l'enregistrement (ISO8601)
     private var recordingEndDate: String?
     
-    // MARK: - Pending Upload
+    // MARK: - Pending Uploads
     
-    /// Données d'un fichier audio en attente d'upload
-    struct PendingUpload {
-        let eventTitle: String
-        let notionPageId: String
+    /// Données d'un fichier audio en attente d'upload (détecté par scan du répertoire)
+    struct PendingUpload: Identifiable {
+        let id: String          // nom du fichier (unique)
         let audioFilePath: String
-        let startDate: String
-        let endDate: String
-        let participantsJSON: String
+        let fileName: String
         let fileSizeMB: Double
+        let fileDate: Date
+        /// Métadonnées UserDefaults (disponibles seulement pour le dernier enregistrement connu)
+        let eventTitle: String?
+        let notionPageId: String?
+        let startDate: String?
+        let endDate: String?
+        let participantsJSON: String?
+        
+        /// Label affiché dans la UI
+        var displayLabel: String {
+            if let title = eventTitle, !title.isEmpty, title != "Enregistrement libre" {
+                return "\(title) — \(String(format: "%.1f", fileSizeMB)) MB"
+            }
+            let name = fileName.replacingOccurrences(of: "recording_", with: "").replacingOccurrences(of: ".m4a", with: "")
+            let parts = name.split(separator: "_")
+            if parts.count >= 2 {
+                let datePart = String(parts[0])
+                let timePart = String(parts[1]).replacingOccurrences(of: "-", with: ":")
+                return "Enreg. \(datePart) \(timePart) — \(String(format: "%.1f", fileSizeMB)) MB"
+            }
+            return "\(fileName) — \(String(format: "%.1f", fileSizeMB)) MB"
+        }
     }
     
-    /// Fichier en attente d'upload (détecté au lancement ou après erreur)
-    var pendingUpload: PendingUpload?
+    /// Fichiers en attente d'upload (détectés par scan du répertoire)
+    var pendingUploads: [PendingUpload] = []
     
     /// Indique si un retry du pending upload est en cours
     var isRetryingPendingUpload = false
@@ -279,9 +298,9 @@ class AppState {
         }
     }
     
-    /// Arr\u{ea}te la capture.
-    /// - Si un \u{e9}v\u{e9}nement est d\u{e9}j\u{e0} associ\u{e9} \u{2192} upload directement
-    /// - Sinon \u{2192} passe en phase .picking (s\u{e9}lection d'\u{e9}v\u{e9}nement)
+    /// Arrête la capture.
+    /// - Si un événement est déjà associé → upload directement
+    /// - Sinon → passe en phase .picking (sélection d'événement)
     func stopRecording() {
         stopTimer()
         recordingEndDate = ISO8601DateFormatter().string(from: Date())
@@ -290,7 +309,7 @@ class AppState {
         UserDefaults.standard.set(recordingEndDate, forKey: "recording.endDate")
         
         if let event = recordingEvent {
-            // Mode classique : \u{e9}v\u{e9}nement d\u{e9}j\u{e0} associ\u{e9} \u{2192} upload direct
+            // Mode classique : événement déjà associé → upload direct
             recordingPhase = .uploading
             persistParticipants(event: event)
             finalizeAndUpload(event: event)
@@ -312,10 +331,10 @@ class AppState {
     }
     
     /// Stop + Assign en une seule commande (pour Alfred fr)
-    /// Arr\u{ea}te l'enregistrement et assigne imm\u{e9}diatement l'\u{e9}v\u{e9}nement
+    /// Arrête l'enregistrement et assigne immédiatement l'événement
     func stopAndAssign(_ event: CalendarEvent) {
         guard isRecording else {
-            // Si d\u{e9}j\u{e0} en picking, juste assigner
+            // Si déjà en picking, juste assigner
             if recordingPhase == .picking {
                 assignEvent(event)
             }
@@ -326,7 +345,7 @@ class AppState {
         recordingEndDate = ISO8601DateFormatter().string(from: Date())
         UserDefaults.standard.set(recordingEndDate, forKey: "recording.endDate")
         
-        // Assigner l'\u{e9}v\u{e9}nement et uploader directement
+        // Assigner l'événement et uploader directement
         recordingEvent = event
         recordingPhase = .uploading
         persistParticipants(event: event)
@@ -334,10 +353,10 @@ class AppState {
         finalizeAndUpload(event: event)
     }
     
-    /// Assigne un \u{e9}v\u{e9}nement au fichier audio finalis\u{e9} et lance l'upload
+    /// Assigne un événement au fichier audio finalisé et lance l'upload
     func assignEvent(_ event: CalendarEvent) {
         guard recordingPhase == .picking, let fileURL = finalizedAudioURL else {
-            print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} assignEvent appel\u{e9} hors phase picking")
+            print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} assignEvent appelé hors phase picking")
             return
         }
         
@@ -349,7 +368,7 @@ class AppState {
         UserDefaults.standard.set(fileURL.path, forKey: "recording.audioFilePath")
         persistParticipants(event: event)
         
-        print("\u{1f399}\u{fe0f} \u{1f4ce} Enregistrement assign\u{e9} \u{e0}: \(event.displayTitle) \u{2192} upload...")
+        print("\u{1f399}\u{fe0f} \u{1f4ce} Enregistrement assigné à: \(event.displayTitle) \u{2192} upload...")
         uploadFinalizedFile(fileURL: fileURL, event: event)
     }
     
@@ -362,7 +381,7 @@ class AppState {
         }
         clearPersistedState()
         reset()
-        print("\u{1f399}\u{fe0f} \u{1f5d1}\u{fe0f} Enregistrement supprim\u{e9} (picking annul\u{e9})")
+        print("\u{1f399}\u{fe0f} \u{1f5d1}\u{fe0f} Enregistrement supprimé (picking annulé)")
     }
     
     func markDone() {
@@ -401,107 +420,104 @@ class AppState {
     
     // MARK: - Pending Upload Management
     
-    /// Vérifie s'il y a un fichier audio en attente d'upload.
-    /// Lit les UserDefaults et vérifie que le fichier existe encore.
+    /// Scanne le répertoire d'enregistrements pour trouver les fichiers en attente.
+    /// Source de vérité = filesystem. Les métadonnées UserDefaults enrichissent si disponibles.
     /// À appeler à chaque ouverture du popover.
     func checkPendingUpload() {
         guard !isRecording,
               recordingPhase == .idle || recordingPhase == .done else {
-            pendingUpload = nil
+            pendingUploads = []
             return
         }
         
+        let fm = FileManager.default
+        let dir = Config.recordingsDirectory
+        
+        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey, .creationDateKey]) else {
+            pendingUploads = []
+            return
+        }
+        
+        // Fichier en cours d'enregistrement (à exclure)
+        let activeFilePath = currentRecordingURL?.path
+        
+        // Métadonnées UserDefaults (pour enrichir le dernier enregistrement connu)
         let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: Self.kIsActive),
-              let audioFilePath = defaults.string(forKey: Self.kAudioFilePath),
-              FileManager.default.fileExists(atPath: audioFilePath) else {
-            pendingUpload = nil
-            return
+        let knownAudioPath = defaults.string(forKey: Self.kAudioFilePath)
+        let knownEventTitle = defaults.string(forKey: Self.kEventTitle)
+        let knownNotionPageId = defaults.string(forKey: Self.kNotionPageId)
+        let knownStartDate = defaults.string(forKey: Self.kStartDate)
+        let knownEndDate = defaults.string(forKey: Self.kEndDate)
+        let knownParticipantsJSON = defaults.string(forKey: Self.kParticipantsJSON)
+        
+        var found: [PendingUpload] = []
+        
+        for file in files {
+            guard file.pathExtension == "m4a" else { continue }
+            let path = file.path
+            
+            // Exclure le fichier en cours d'enregistrement
+            if path == activeFilePath { continue }
+            
+            let attrs = try? fm.attributesOfItem(atPath: path)
+            let size = (attrs?[.size] as? Int) ?? 0
+            guard size > 10_240 else { continue }
+            
+            let creationDate = (attrs?[.creationDate] as? Date) ?? Date()
+            let fileName = file.lastPathComponent
+            
+            // Enrichir avec UserDefaults si c'est le fichier connu
+            let isKnownFile = (path == knownAudioPath)
+            
+            found.append(PendingUpload(
+                id: fileName,
+                audioFilePath: path,
+                fileName: fileName,
+                fileSizeMB: Double(size) / 1_048_576,
+                fileDate: creationDate,
+                eventTitle: isKnownFile ? knownEventTitle : nil,
+                notionPageId: isKnownFile ? knownNotionPageId : nil,
+                startDate: isKnownFile ? knownStartDate : nil,
+                endDate: isKnownFile ? knownEndDate : nil,
+                participantsJSON: isKnownFile ? knownParticipantsJSON : nil
+            ))
         }
         
-        let eventTitle = defaults.string(forKey: Self.kEventTitle) ?? "Enregistrement"
-        let notionPageId = defaults.string(forKey: Self.kNotionPageId) ?? ""
-        let startDate = defaults.string(forKey: Self.kStartDate) ?? ""
-        let endDate = defaults.string(forKey: Self.kEndDate) ?? ISO8601DateFormatter().string(from: Date())
-        let participantsJSON = defaults.string(forKey: Self.kParticipantsJSON) ?? "[]"
-        
-        let size = (try? FileManager.default.attributesOfItem(atPath: audioFilePath)[.size] as? Int) ?? 0
-        guard size > 10_240 else {
-            try? FileManager.default.removeItem(atPath: audioFilePath)
-            clearPersistedState()
-            pendingUpload = nil
-            return
-        }
-        
-        pendingUpload = PendingUpload(
-            eventTitle: eventTitle,
-            notionPageId: notionPageId,
-            audioFilePath: audioFilePath,
-            startDate: startDate,
-            endDate: endDate,
-            participantsJSON: participantsJSON,
-            fileSizeMB: Double(size) / 1_048_576
-        )
+        // Trier par date de création (plus récent en premier)
+        pendingUploads = found.sorted { $0.fileDate > $1.fileDate }
     }
     
-    /// Réessaie l'upload du fichier en attente
-    func retryPendingUpload() {
-        guard let pending = pendingUpload else { return }
+    /// Prépare un fichier en attente pour l'assignation à une réunion (mode picking)
+    func assignPendingUpload(_ pending: PendingUpload) {
+        finalizedAudioURL = URL(fileURLWithPath: pending.audioFilePath)
+        recordingStartDate = pending.startDate
+        recordingEndDate = pending.endDate
         
-        // Enregistrement libre (pas encore assigné) → phase picking
-        if pending.notionPageId.isEmpty {
-            finalizedAudioURL = URL(fileURLWithPath: pending.audioFilePath)
-            recordingStartDate = pending.startDate
-            recordingEndDate = pending.endDate
-            recordingPhase = .picking
-            pendingUpload = nil
-            return
-        }
+        // Persister pour recovery pendant l'upload
+        let defaults = UserDefaults.standard
+        defaults.set(pending.audioFilePath, forKey: Self.kAudioFilePath)
+        if let start = pending.startDate { defaults.set(start, forKey: Self.kStartDate) }
+        if let end = pending.endDate { defaults.set(end, forKey: Self.kEndDate) }
+        if let participants = pending.participantsJSON { defaults.set(participants, forKey: Self.kParticipantsJSON) }
+        defaults.set(true, forKey: Self.kIsActive)
         
-        recordingPhase = .uploading
-        isRetryingPendingUpload = true
-        pendingUpload = nil
-        
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd"
-        let eventDate = dateFormatter.string(from: Date())
-        
-        Task { @MainActor in
-            do {
-                let fileURL = URL(fileURLWithPath: pending.audioFilePath)
-                try await uploadService.uploadRecoveredAudio(
-                    fileURL: fileURL,
-                    eventTitle: pending.eventTitle,
-                    notionPageId: pending.notionPageId,
-                    eventDate: eventDate,
-                    startDate: pending.startDate,
-                    endDate: pending.endDate,
-                    participantsJSON: pending.participantsJSON
-                )
-                
-                uploadService.cleanupFile(at: fileURL)
-                clearPersistedState()
-                isRetryingPendingUpload = false
-                markDone()
-                
-            } catch {
-                isRetryingPendingUpload = false
-                markError(error.localizedDescription)
-            }
-        }
+        pendingUploads = []
+        recordingPhase = .picking
     }
     
-    /// Supprime définitivement le fichier en attente d'upload
-    func discardPendingUpload() {
-        guard let pending = pendingUpload else { return }
+    /// Supprime définitivement un fichier en attente d'upload
+    func discardPendingUpload(_ pending: PendingUpload) {
         try? FileManager.default.removeItem(atPath: pending.audioFilePath)
-        clearPersistedState()
-        pendingUpload = nil
+        // Si c'est le fichier connu dans UserDefaults, nettoyer
+        if UserDefaults.standard.string(forKey: Self.kAudioFilePath) == pending.audioFilePath {
+            clearPersistedState()
+        }
+        pendingUploads.removeAll { $0.id == pending.id }
     }
     
     // MARK: - Private Upload Helpers
     
-    /// Finalise la capture et uploade directement (mode avec \u{e9}v\u{e9}nement pr\u{e9}-associ\u{e9})
+    /// Finalise la capture et uploade directement (mode avec événement pré-associé)
     private func finalizeAndUpload(event: CalendarEvent) {
         Task { @MainActor in
             do {
@@ -525,7 +541,7 @@ class AppState {
         }
     }
     
-    /// Upload un fichier d\u{e9}j\u{e0} finalis\u{e9} (apr\u{e8}s assignation d'\u{e9}v\u{e9}nement)
+    /// Upload un fichier déjà finalisé (après assignation d'événement)
     private func uploadFinalizedFile(fileURL: URL, event: CalendarEvent) {
         Task { @MainActor in
             do {
@@ -547,7 +563,7 @@ class AppState {
         }
     }
     
-    /// Persiste les participants d'un \u{e9}v\u{e9}nement pour recovery
+    /// Persiste les participants d'un événement pour recovery
     private func persistParticipants(event: CalendarEvent) {
         if let participants = event.allParticipants ?? event.participants,
            let jsonData = try? JSONEncoder().encode(participants),
@@ -556,7 +572,7 @@ class AppState {
         }
     }
     
-    // MARK: - Persistence (UserDefaults) pour recovery apr\u{e8}s crash/quit
+    // MARK: - Persistence (UserDefaults) pour recovery après crash/quit
     
     private static let kEventId = "recording.eventId"
     private static let kEventTitle = "recording.eventTitle"
@@ -567,7 +583,7 @@ class AppState {
     private static let kParticipantsJSON = "recording.participantsJSON"
     private static let kIsActive = "recording.isActive"
     
-    /// Persiste l'\u{e9}tat d'enregistrement
+    /// Persiste l'état d'enregistrement
     private func persistRecordingState(event: CalendarEvent?) {
         let defaults = UserDefaults.standard
         defaults.set(event?.id ?? "free-recording", forKey: Self.kEventId)
@@ -575,10 +591,10 @@ class AppState {
         defaults.set(event?.notionPageId ?? "", forKey: Self.kNotionPageId)
         defaults.set(recordingStartDate, forKey: Self.kStartDate)
         defaults.set(true, forKey: Self.kIsActive)
-        print("\u{1f399}\u{fe0f} \u{1f4be} \u{c9}tat persist\u{e9} (event: \(event?.displayTitle ?? "libre"))")
+        print("\u{1f399}\u{fe0f} \u{1f4be} \u{c9}tat persisté (event: \(event?.displayTitle ?? "libre"))")
     }
     
-    /// Supprime l'\u{e9}tat persist\u{e9}
+    /// Supprime l'état persisté
     func clearPersistedState() {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: Self.kEventId)
@@ -591,7 +607,7 @@ class AppState {
         defaults.removeObject(forKey: Self.kIsActive)
     }
     
-    /// Donn\u{e9}es r\u{e9}cup\u{e9}r\u{e9}es d'un enregistrement interrompu
+    /// Données récupérées d'un enregistrement interrompu
     struct RecoveredRecording {
         let eventTitle: String
         let notionPageId: String
@@ -601,12 +617,12 @@ class AppState {
         let participantsJSON: String
     }
     
-    /// V\u{e9}rifie si un enregistrement interrompu peut \u{ea}tre r\u{e9}cup\u{e9}r\u{e9}.
+    /// Vérifie si un enregistrement interrompu peut être récupéré.
     /// Ne retourne rien si un enregistrement est actuellement en cours.
     func checkForRecovery() -> RecoveredRecording? {
-        // GUARD: ne pas interf\u{e9}rer avec un enregistrement actif ou un picking
+        // GUARD: ne pas interférer avec un enregistrement actif ou un picking
         guard !isRecording, recordingPhase == .idle else {
-            print("\u{1f399}\u{fe0f} \u{23ed} Recovery ignor\u{e9}e : enregistrement en cours")
+            print("\u{1f399}\u{fe0f} \u{23ed} Recovery ignorée : enregistrement en cours")
             return nil
         }
         
@@ -622,14 +638,14 @@ class AppState {
         let endDate = defaults.string(forKey: Self.kEndDate) ?? ISO8601DateFormatter().string(from: Date())
         let participantsJSON = defaults.string(forKey: Self.kParticipantsJSON) ?? "[]"
         
-        // V\u{e9}rifier que le fichier audio existe encore
+        // Vérifier que le fichier audio existe encore
         guard FileManager.default.fileExists(atPath: audioFilePath) else {
             print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} Fichier audio disparu: \(audioFilePath)")
             clearPersistedState()
             return nil
         }
         
-        // V\u{e9}rifier que le fichier n'est pas trop petit (> 10 KB)
+        // Vérifier que le fichier n'est pas trop petit (> 10 KB)
         let size = (try? FileManager.default.attributesOfItem(atPath: audioFilePath)[.size] as? Int) ?? 0
         guard size > 10_240 else {
             try? FileManager.default.removeItem(atPath: audioFilePath)
@@ -638,16 +654,16 @@ class AppState {
         }
         
         let sizeMB = Double(size) / 1_048_576
-        print("\u{1f399}\u{fe0f} \u{1f504} Enregistrement r\u{e9}cup\u{e9}rable trouv\u{e9}: \(eventTitle) (\(String(format: "%.1f", sizeMB)) MB)")
+        print("\u{1f399}\u{fe0f} \u{1f504} Enregistrement récupérable trouvé: \(eventTitle) (\(String(format: "%.1f", sizeMB)) MB)")
         
-        // Si c'\u{e9}tait un enregistrement libre (pas encore assign\u{e9}), passer en picking
+        // Si c'était un enregistrement libre (pas encore assigné), passer en picking
         if notionPageId.isEmpty {
-            print("\u{1f399}\u{fe0f} \u{1f504} Enregistrement libre r\u{e9}cup\u{e9}r\u{e9} \u{2192} phase picking")
+            print("\u{1f399}\u{fe0f} \u{1f504} Enregistrement libre récupéré → phase picking")
             finalizedAudioURL = URL(fileURLWithPath: audioFilePath)
             recordingStartDate = startDate
             recordingEndDate = endDate
             recordingPhase = .picking
-            return nil // Pas de recovery auto \u{2014} l'utilisateur va choisir l'\u{e9}v\u{e9}nement
+            return nil // Pas de recovery auto — l'utilisateur va choisir l'événement
         }
         
         return RecoveredRecording(
@@ -660,7 +676,7 @@ class AppState {
         )
     }
     
-    /// Tente l'upload d'un enregistrement r\u{e9}cup\u{e9}r\u{e9}
+    /// Tente l'upload d'un enregistrement récupéré
     func retryRecoveredRecording(_ recovered: RecoveredRecording) {
         recordingPhase = .uploading
         
@@ -683,21 +699,21 @@ class AppState {
                 
                 uploadService.cleanupFile(at: fileURL)
                 clearPersistedState()
-                print("\u{1f399}\u{fe0f} \u{2705} Recovery upload r\u{e9}ussi pour: \(recovered.eventTitle)")
+                print("\u{1f399}\u{fe0f} \u{2705} Recovery upload réussi pour: \(recovered.eventTitle)")
                 markDone()
                 
             } catch {
-                print("\u{1f399}\u{fe0f} \u{274c} Recovery upload \u{e9}chou\u{e9}: \(error.localizedDescription)")
-                markError("Upload \u{e9}chou\u{e9} : \(recovered.eventTitle). Sera r\u{e9}essay\u{e9} au prochain lancement.")
+                print("\u{1f399}\u{fe0f} \u{274c} Recovery upload échoué: \(error.localizedDescription)")
+                markError("Upload échoué : \(recovered.eventTitle). Sera réessayé au prochain lancement.")
             }
         }
     }
     
-    /// Supprime un enregistrement r\u{e9}cup\u{e9}r\u{e9} (choix utilisateur)
+    /// Supprime un enregistrement récupéré (choix utilisateur)
     func discardRecoveredRecording(_ recovered: RecoveredRecording) {
         try? FileManager.default.removeItem(atPath: recovered.audioFilePath)
         clearPersistedState()
-        print("\u{1f399}\u{fe0f} \u{1f5d1}\u{fe0f} Enregistrement r\u{e9}cup\u{e9}r\u{e9} supprim\u{e9}: \(recovered.eventTitle)")
+        print("\u{1f399}\u{fe0f} \u{1f5d1}\u{fe0f} Enregistrement récupéré supprimé: \(recovered.eventTitle)")
     }
     
     // MARK: - Timer
@@ -723,7 +739,7 @@ enum RecordingPhase: Equatable {
     case recording
     case paused
     case uploading
-    case picking    // En attente de s\u{e9}lection d'\u{e9}v\u{e9}nement apr\u{e8}s stop
+    case picking    // En attente de sélection d'événement après stop
     case done
     case error(String)
     

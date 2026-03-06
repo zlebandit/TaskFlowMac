@@ -50,8 +50,8 @@ struct MenuBarPopover: View {
             
             // MARK: - Bouton enregistrement libre (si idle)
             else if appState.recordingPhase == .idle {
-                if appState.pendingUpload != nil {
-                    pendingUploadBanner
+                ForEach(appState.pendingUploads) { pending in
+                    pendingUploadRow(pending: pending)
                     Divider()
                 }
                 freeRecordButton
@@ -361,7 +361,6 @@ struct MenuBarPopover: View {
             Spacer()
             Button {
                 appState.reset()
-                appState.retryPendingUpload()
             } label: {
                 Image(systemName: "arrow.clockwise.circle.fill")
                     .font(.title3)
@@ -385,9 +384,9 @@ struct MenuBarPopover: View {
         .background(.orange.opacity(0.08))
     }
     
-    // MARK: - Pending Upload Banner
+    // MARK: - Pending Upload Row
     
-    private var pendingUploadBanner: some View {
+    private func pendingUploadRow(pending: AppState.PendingUpload) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.arrow.circlepath")
                 .foregroundStyle(.orange)
@@ -396,28 +395,26 @@ struct MenuBarPopover: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Fichier en attente d'envoi")
                     .font(.subheadline.weight(.medium))
-                if let pending = appState.pendingUpload {
-                    Text("\(pending.eventTitle) — \(String(format: "%.1f", pending.fileSizeMB)) MB")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                Text(pending.displayLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             
             Spacer()
             
             Button {
-                appState.retryPendingUpload()
+                appState.assignPendingUpload(pending)
             } label: {
-                Image(systemName: "arrow.clockwise.circle.fill")
+                Image(systemName: "arrow.up.circle.fill")
                     .font(.title3)
                     .foregroundStyle(.blue)
             }
             .buttonStyle(.plain)
-            .help("Réessayer l'envoi")
+            .help("Assigner à une réunion")
             
             Button {
-                appState.discardPendingUpload()
+                appState.discardPendingUpload(pending)
             } label: {
                 Image(systemName: "trash.circle")
                     .font(.title3)
