@@ -264,27 +264,39 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
     // MARK: - Static Utilities
     
     /// Nettoie les fichiers d'enregistrement orphelins > 48h.
-    /// Préserve ceux référencés dans UserDefaults (en attente d'upload).
+    /// Préserve les fichiers qui ont un sidecar JSON (en attente d'upload).
     /// À appeler au lancement de l'app.
     static func cleanupOrphanedRecordings() {
         let dir = Config.recordingsDirectory
-        guard let files = try? FileManager.default.contentsOfDirectory(
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: [.creationDateKey]
         ) else { return }
         
         let now = Date()
-        let pendingPath = UserDefaults.standard.string(forKey: "recording.audioFilePath")
         var cleanedCount = 0
         
         for file in files {
             guard file.pathExtension == "m4a" else { continue }
             
-            // Ne pas supprimer le fichier en attente d'upload
-            if file.path == pendingPath { continue }
+            // Ne JAMAIS supprimer un fichier qui a un sidecar JSON
+            // (il est en attente d'upload avec ses métadonnées)
+            let sidecar = PendingUploadManager.sidecarURL(for: file)
+            if fm.fileExists(atPath: sidecar.path) { continue }
             
             if let creationDate = (try? file.resourceValues(forKeys: [.creationDateKey]))?.creationDate,
                now.timeIntervalSince(creationDate) > 172_800 { // 48h
-                try? FileManager.default.removeItem(at: file)
+                try? fm.removeItem(at: file)
+                cleanedCount += 1
+            }
+        }
+        
+        // Nettoyer aussi les sidecars orphelins (dont le .m4a a disparu)
+        for file in files {
+            guard file.pathExtension == "json" else { continue }
+            let audioFile = file.deletingPathExtension().appendingPathExtension("m4a")
+            if !fm.fileExists(atPath: audioFile.path) {
+                try? fm.removeItem(at: file)
                 cleanedCount += 1
             }
         }

@@ -17,9 +17,10 @@
 //    taskflowmac://meetings → écrit le JSON des réunions (pour Alfred)
 //
 //  Au lancement :
-//    - Nettoyage des fichiers audio orphelins > 48h
-//    - Auto-recovery d'un enregistrement interrompu (crash/quit)
-//      → une seule fois, jamais pendant un enregistrement actif
+//    - Nettoyage des fichiers audio orphelins > 48h (protège les sidecars)
+//    - Migration UserDefaults → sidecar JSON (one-shot)
+//    - Auto-retry des fichiers assignés en attente d'upload
+//    - Recovery d'un enregistrement interrompu (crash/quit)
 //
 
 import SwiftUI
@@ -39,10 +40,9 @@ struct TaskFlowMacApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var appState = AppState()
     
-
-    
     init() {
         // Nettoyage des fichiers orphelins > 48h au lancement
+        // (protège les fichiers avec sidecar JSON)
         AudioCaptureService.cleanupOrphanedRecordings()
     }
     
@@ -55,8 +55,8 @@ struct TaskFlowMacApp: App {
                     if appDelegate.urlSchemeHandler == nil {
                         appDelegate.setup(appState: appState)
                     }
-                    // Vérifier s'il y a des fichiers en attente d'upload
-                    appState.checkPendingUpload()
+                    // Scanner les fichiers en attente d'upload
+                    appState.scanPendingUploads()
                 }
         } label: {
             menuBarLabel
@@ -96,9 +96,9 @@ struct TaskFlowMacApp: App {
                 Image(systemName: "waveform")
             }
         }
+        .task {
+            // Initialisation au lancement : migration + scan + auto-retry
+            appState.initializePendingUploads()
+        }
     }
-    
-    // MARK: - Recovery (une seule fois)
-    
-
 }

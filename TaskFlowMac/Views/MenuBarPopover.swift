@@ -13,6 +13,7 @@
 //    - Uploading : spinner
 //    - Done : banner vert (3s)
 //    - Error : banner orange avec message
+//    - Pending uploads : bandeau orange par fichier en attente (assign/retry/delete)
 //
 
 import SwiftUI
@@ -48,7 +49,7 @@ struct MenuBarPopover: View {
                 Divider()
             }
             
-            // MARK: - Bouton enregistrement libre (si idle)
+            // MARK: - Bouton enregistrement libre + pending uploads (si idle)
             else if appState.recordingPhase == .idle {
                 ForEach(appState.pendingUploads) { pending in
                     pendingUploadRow(pending: pending)
@@ -80,7 +81,7 @@ struct MenuBarPopover: View {
             await loadMeetingsIfNeeded()
         }
         .onAppear {
-            appState.checkPendingUpload()
+            appState.scanPendingUploads()
         }
     }
     
@@ -384,16 +385,16 @@ struct MenuBarPopover: View {
         .background(.orange.opacity(0.08))
     }
     
-    // MARK: - Pending Upload Row
+    // MARK: - Pending Upload Row (sidecar-based)
     
-    private func pendingUploadRow(pending: AppState.PendingUpload) -> some View {
+    private func pendingUploadRow(pending: PendingUploadInfo) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.arrow.circlepath")
                 .foregroundStyle(.orange)
                 .font(.body)
             
             VStack(alignment: .leading, spacing: 1) {
-                Text("Fichier en attente d'envoi")
+                Text(pending.isAssigned ? "En attente d'envoi" : "Fichier non assigné")
                     .font(.subheadline.weight(.medium))
                 Text(pending.displayLabel)
                     .font(.caption)
@@ -403,15 +404,30 @@ struct MenuBarPopover: View {
             
             Spacer()
             
-            Button {
-                appState.assignPendingUpload(pending)
-            } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(.blue)
+            if pending.isAssigned {
+                // Retry direct (l'événement est déjà assigné)
+                Button {
+                    appState.retryPendingUpload(pending)
+                } label: {
+                    Image(systemName: "arrow.clockwise.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.blue)
+                }
+                .buttonStyle(.plain)
+                .help("Réessayer l'envoi")
+                .disabled(appState.isRetryingPendingUpload)
+            } else {
+                // Assigner à une réunion
+                Button {
+                    appState.assignPendingUpload(pending)
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.blue)
+                }
+                .buttonStyle(.plain)
+                .help("Assigner à une réunion")
             }
-            .buttonStyle(.plain)
-            .help("Assigner à une réunion")
             
             Button {
                 appState.discardPendingUpload(pending)
