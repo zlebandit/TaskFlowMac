@@ -11,7 +11,18 @@
 # (stopassign gère stop + assign en une seule commande)
 
 BUNDLE_ID="com.clementziza.taskflowmac"
-JSON_FILE="$HOME/.taskflowmac-meetings.json"
+
+# Deux chemins possibles pour le JSON des meetings (sandbox ou home)
+SANDBOX_FILE="$HOME/Library/Containers/com.clementziza.TaskFlowMac/Data/.taskflowmac-meetings.json"
+HOME_FILE="$HOME/.taskflowmac-meetings.json"
+
+if [ -f "$SANDBOX_FILE" ]; then
+    JSON_FILE="$SANDBOX_FILE"
+elif [ -f "$HOME_FILE" ]; then
+    JSON_FILE="$HOME_FILE"
+else
+    JSON_FILE=""
+fi
 
 # Lire l'état d'enregistrement depuis UserDefaults
 IS_ACTIVE=$(defaults read "$BUNDLE_ID" "recording.isActive" 2>/dev/null || echo "0")
@@ -37,20 +48,21 @@ items = [{
 }]
 
 # Ajouter les autres réunions (sauf celle déjà auto-détectée)
-try:
-    with open(json_file) as f:
-        data = json.load(f)
-        for item in data.get("items", []):
-            if item.get("uid") != event_id and item.get("arg") != event_id:
-                items.append(item)
-except:
-    pass
+if json_file:
+    try:
+        with open(json_file) as f:
+            data = json.load(f)
+            for item in data.get("items", []):
+                if item.get("uid") != event_id and item.get("arg") != event_id:
+                    items.append(item)
+    except:
+        pass
 
 print(json.dumps({"items": items}))
 PYEOF
 else
     # Pas d'auto-détection → toutes les réunions du jour
-    if [ -f "$JSON_FILE" ]; then
+    if [ -n "$JSON_FILE" ]; then
         cat "$JSON_FILE"
     else
         echo '{"items": [{"uid": "error", "title": "Aucune réunion disponible", "subtitle": "Lance l'\''app et ouvre le popover pour sync.", "valid": false}]}'
