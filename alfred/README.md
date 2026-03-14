@@ -26,47 +26,38 @@ Celui-ci est un **Script Filter** qui affiche la liste des réunions.
    - Script : colle le contenu de `fr-script-filter.sh` (voir ci-dessous)
    - Cocher "Alfred filters results" (désactivé) — on veut tous les résultats
 
-2. Connecte le Script Filter à une action **Open URL** avec URL : `taskflowmac://assign?id={query}`
+2. Connecte le Script Filter à une action **Open URL** avec URL : `taskflowmac://stopassign?id={query}`
+   - ⚠️ Utiliser `stopassign` (pas `assign`) — il gère stop + assign en une seule commande
 
-#### Script pour `fr` :
+#### Script pour `fr` (smart — auto-détection) :
 
-```bash
-#!/bin/bash
-# Stopper l'enregistrement + écrire le JSON des meetings
-open "taskflowmac://stop"
-open "taskflowmac://meetings"
+Le script lit les UserDefaults de l'app pour détecter si l'enregistrement a été
+démarré depuis l'app avec un événement spécifique. Si oui, cet événement est
+affiché en tête de liste avec ✨. Sinon, toutes les réunions du jour sont affichées.
 
-# Attendre que l'app écrive le fichier (max 1s)
-JSON_FILE="$TMPDIR/taskflowmac-meetings.json"
-for i in $(seq 1 10); do
-    if [ -f "$JSON_FILE" ] && [ "$(stat -f%m "$JSON_FILE")" -gt "$(($(date +%s) - 2))" ]; then
-        break
-    fi
-    sleep 0.1
-done
-
-# Lire et afficher le JSON
-if [ -f "$JSON_FILE" ]; then
-    cat "$JSON_FILE"
-else
-    cat << 'FALLBACK'
-{"items": [{"uid": "error", "title": "Aucune réunion disponible", "subtitle": "L'app n'a pas répondu.", "valid": false}]}
-FALLBACK
-fi
-```
+Voir `fr-script-filter.sh` pour le code complet.
 
 ### Flux complet
 
+#### Cas 1 : Enregistrement démarré depuis l'app (avec événement)
+```
+App → Swipe sur "Réunion Client X" → 🎙 Transcrire
+  → L'enregistrement démarre (🔴 visible dans la menubar)
+
+⌘Space → fr
+  → Alfred affiche "⏹ Réunion Client X" en premier (auto-détecté ✨)
+  → Entrée → stopassign → Upload automatique → Transcription
+```
+
+#### Cas 2 : Enregistrement libre (dr)
 ```
 ⌘Space → dr → Entrée
-  → L'enregistrement démarre (🎙️ visible dans la menubar)
-  → Pendant la réunion : pause via app ou raccourci
+  → L'enregistrement démarre (🔴 visible dans la menubar)
 
-⌘Space → fr → Entrée
-  → L'enregistrement s'arrête
-  → Alfred affiche la liste des réunions du jour
+⌘Space → fr
+  → Alfred affiche toutes les réunions du jour
   → Tu sélectionnes la bonne réunion → Entrée
-  → Upload automatique vers n8n → Transcription
+  → stopassign → Upload automatique → Transcription
 ```
 
 ## Raccourcis optionnels (Hotkeys)
