@@ -126,7 +126,7 @@ struct UploadService {
     /// Supprime le fichier audio local
     func cleanupFile(at url: URL) {
         try? FileManager.default.removeItem(at: url)
-        print("\u{1f399}\u{fe0f} \u{1f5d1}\u{fe0f} Fichier audio supprimé: \(url.lastPathComponent)")
+        print("[Upload] Fichier audio supprim\u{00e9}: \(url.lastPathComponent)")
     }
     
     // MARK: - Retry Logic (factorisé)
@@ -149,31 +149,31 @@ struct UploadService {
                 )
                 
                 if attempt > 1 {
-                    print("\u{1f399}\u{fe0f} \u{2705} Upload réussi \u00e0 la tentative \(attempt)")
+                    print("[Upload] Upload r\u{00e9}ussi \u{00e0} la tentative \(attempt)")
                 } else {
-                    print("\u{1f399}\u{fe0f} \u{2705} Upload réussi")
+                    print("[Upload] Upload r\u{00e9}ussi")
                 }
                 return
                 
             } catch let error as UploadError {
                 lastError = error
-                print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} Tentative \(attempt)/\(Self.maxRetries) \u00e9chou\u00e9e: \(error.localizedDescription ?? "unknown")")
+                print("[Upload] Tentative \(attempt)/\(Self.maxRetries) \u{00e9}chou\u{00e9}e: \(error.localizedDescription ?? "unknown")")
                 
                 guard error.isRetryable, attempt < Self.maxRetries else { break }
                 
                 let delay = Self.retryDelays[min(attempt - 1, Self.retryDelays.count - 1)]
-                print("\u{1f399}\u{fe0f} \u{23f3} Retry dans \(delay / 1_000_000_000)s...")
+                print("[Upload] Retry dans \(delay / 1_000_000_000)s...")
                 try? await Task.sleep(nanoseconds: delay)
                 
             } catch {
                 let nsError = error as NSError
                 lastError = .networkError("\(nsError.localizedDescription) (code \(nsError.code))")
-                print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} Tentative \(attempt)/\(Self.maxRetries) - Erreur réseau: \(error.localizedDescription)")
+                print("[Upload] Tentative \(attempt)/\(Self.maxRetries) - Erreur r\u{00e9}seau: \(error.localizedDescription)")
                 
                 guard attempt < Self.maxRetries else { break }
                 
                 let delay = Self.retryDelays[min(attempt - 1, Self.retryDelays.count - 1)]
-                print("\u{1f399}\u{fe0f} \u{23f3} Retry dans \(delay / 1_000_000_000)s...")
+                print("[Upload] Retry dans \(delay / 1_000_000_000)s...")
                 try? await Task.sleep(nanoseconds: delay)
             }
         }
@@ -200,7 +200,7 @@ struct UploadService {
         }
         
         let sizeMB = Double(fileSize) / 1_048_576
-        print("\u{1f399}\u{fe0f} \u{1f4c1} Fichier audio validé: \(String(format: "%.1f", sizeMB)) MB")
+        print("[Upload] Fichier audio valid\u{00e9}: \(String(format: "%.1f", sizeMB)) MB")
     }
     
     // MARK: - Single Upload Attempt (streaming)
@@ -235,7 +235,7 @@ struct UploadService {
         let (responseData, response) = try await URLSession.shared.upload(for: request, fromFile: tempBodyURL)
         
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw UploadError.networkError("Réponse HTTP invalide")
+            throw UploadError.networkError("R\u{00e9}ponse HTTP invalide")
         }
         
         guard (200...299).contains(httpResponse.statusCode) else {
@@ -243,7 +243,7 @@ struct UploadService {
             throw UploadError.serverError(statusCode: httpResponse.statusCode, body: body)
         }
         
-        print("\u{1f399}\u{fe0f} \u{2705} Upload réussi (HTTP \(httpResponse.statusCode))")
+        print("[Upload] Upload r\u{00e9}ussi (HTTP \(httpResponse.statusCode))")
     }
     
     // MARK: - Multipart Body Builder (streaming)
