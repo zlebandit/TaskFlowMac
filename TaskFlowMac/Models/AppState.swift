@@ -89,6 +89,34 @@ class AppState {
         }
     }
     
+    // MARK: - Sync
+    
+    /// Sync les réunions du jour depuis le serveur (avec debounce)
+    func syncMeetings() async {
+        if let lastSync = lastSyncDate,
+           Date().timeIntervalSince(lastSync) < Config.minSyncInterval {
+            return
+        }
+        await forceSyncMeetings()
+    }
+    
+    /// Force la sync des réunions (sans debounce, pour le bouton refresh)
+    func forceSyncMeetings() async {
+        isLoading = true
+        defer { isLoading = false }
+        
+        do {
+            let fetched = try await SyncService().fetchMeetings()
+            meetings = fetched
+            saveCacheToDisk()
+            writeMeetingsJSONFile()
+            lastSyncDate = Date()
+            print("\u{2705} Sync: \(fetched.count) réunions")
+        } catch {
+            print("\u{274c} Sync failed: \(error.localizedDescription)")
+        }
+    }
+    
     // MARK: - Recording State
     
     /// Phase d'enregistrement
@@ -173,19 +201,38 @@ class AppState {
         return String(format: "%02d:%02d", m, s)
     }
     
+    // MARK: - Alfred JSON (Codable)
+    
+    /// Modèle Alfred Script Filter
+    private struct AlfredResult: Encodable {
+        let items: [AlfredItem]
+    }
+    
+    private struct AlfredItem: Encodable {
+        let uid: String
+        let title: String
+        let subtitle: String
+        let arg: String
+        let icon: AlfredIcon
+    }
+    
+    private struct AlfredIcon: Encodable {
+        let path: String
+    }
+    
     /// JSON des réunions du jour au format Alfred Script Filter
     var meetingsJSON: String {
-        let items = meetings.map { event -> [String: Any] in
-            [
-                "uid": event.id,
-                "title": event.displayTitle,
-                "subtitle": event.timeRange + (event.Lieu.map { " \u{2014} \($0)" } ?? ""),
-                "arg": event.id,
-                "icon": ["path": "icon.png"]
-            ]
+        let items = meetings.map { event in
+            AlfredItem(
+                uid: event.id,
+                title: event.displayTitle,
+                subtitle: event.timeRange + (event.Lieu.map { " \u{2014} \($0)" } ?? ""),
+                arg: event.id,
+                icon: AlfredIcon(path: "icon.png")
+            )
         }
-        let result: [String: Any] = ["items": items]
-        guard let data = try? JSONSerialization.data(withJSONObject: result),
+        let result = AlfredResult(items: items)
+        guard let data = try? JSONEncoder().encode(result),
               let json = String(data: data, encoding: .utf8) else {
             return "{\"items\": []}"
         }
@@ -194,36 +241,10 @@ class AppState {
     
     // MARK: - Recording Actions
     
-    /// Démarre la capture audio micro SANS événement (enregistrement libre)
-    func startRecording() {
-        recordingEvent = nil
-        recordingPhase = .recording
-        elapsedSeconds = 0
-        recordingStartDate = ISO8601DateFormatter().string(from: Date())
-        recordingEndDate = nil
-        finalizedAudioURL = nil
-        startTimer()
-        
-        // Persister l'état pour recovery (sans événement)
-        persistRecordingState(event: nil)
-        
-        Task { @MainActor in
-            do {
-                let fileURL = try await audioCaptureService.startCapture()
-                currentRecordingURL = fileURL
-                UserDefaults.standard.set(fileURL.path, forKey: Self.kAudioFilePath)
-                print("\u{1f399}\u{fe0f} \u{2705} Capture libre démarrée \u{2192} \(fileURL.lastPathComponent)")
-            } catch {
-                print("\u{1f399}\u{fe0f} \u{274c} Erreur démarrage capture: \(error.localizedDescription)")
-                recordingPhase = .error(error.localizedDescription)
-                stopTimer()
-                clearPersistedState()
-            }
-        }
-    }
-    
-    /// Démarre la capture audio micro AVEC un événement (mode classique)
-    func startRecording(for event: CalendarEvent) {
+    /// Démarre la capture audio micro.
+    /// - Sans event : enregistrement libre (picking après stop)
+    /// - Avec event : mode classique (upload direct après stop)
+    func startRecording(for event: CalendarEvent? = nil) {
         recordingEvent = event
         recordingPhase = .recording
         elapsedSeconds = 0
@@ -240,7 +261,8 @@ class AppState {
                 let fileURL = try await audioCaptureService.startCapture()
                 currentRecordingURL = fileURL
                 UserDefaults.standard.set(fileURL.path, forKey: Self.kAudioFilePath)
-                print("\u{1f399}\u{fe0f} \u{2705} Capture démarrée pour \(event.displayTitle) \u{2192} \(fileURL.lastPathComponent)")
+                let label = event.map { $0.displayTitle } ?? "libre"
+                print("\u{1f399}\u{fe0f} \u{2705} Capture démarrée (\(label)) \u{2192} \(fileURL.lastPathComponent)")
             } catch {
                 print("\u{1f399}\u{fe0f} \u{274c} Erreur démarrage capture: \(error.localizedDescription)")
                 recordingPhase = .error(error.localizedDescription)

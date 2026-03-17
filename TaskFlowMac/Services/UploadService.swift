@@ -30,12 +30,12 @@ enum UploadError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .fileNotFound: return "Fichier audio introuvable"
-        case .fileTooSmall(let bytes): return "Fichier audio trop petit (\(bytes) octets) — enregistrement vide ?"
+        case .fileTooSmall(let bytes): return "Fichier audio trop petit (\(bytes) octets) \u{2014} enregistrement vide ?"
         case .fileTooLarge(let mb): return "Fichier audio trop volumineux (\(mb) MB)"
         case .invalidURL: return "URL d'upload invalide"
         case .serverError(let code, let body): return "Erreur serveur (\(code)): \(body)"
-        case .networkError(let msg): return "Erreur réseau: \(msg)"
-        case .allRetriesFailed(let msg): return "Échec après 3 tentatives : \(msg)"
+        case .networkError(let msg): return "Erreur r\u{00e9}seau: \(msg)"
+        case .allRetriesFailed(let msg): return "\u{00c9}chec apr\u{00e8}s 3 tentatives : \(msg)"
         }
     }
     
@@ -66,20 +66,13 @@ struct UploadService {
     // MARK: - Upload with Retry
     
     /// Upload le fichier audio vers n8n pour transcription, avec retry automatique.
-    /// - Parameters:
-    ///   - fileURL: URL du fichier audio M4A
-    ///   - event: Réunion associée
-    ///   - recordingStartDate: Date ISO8601 de début d'enregistrement
-    ///   - recordingEndDate: Date ISO8601 de fin d'enregistrement
     func uploadAudio(fileURL: URL, event: CalendarEvent, recordingStartDate: String, recordingEndDate: String) async throws {
-        // 1. Valider le fichier
         try validateAudioFile(at: fileURL)
         
         guard let webhookURL = URL(string: Config.transcribeURL) else {
             throw UploadError.invalidURL
         }
         
-        // 2. Préparer les champs metadata
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd"
         
@@ -98,48 +91,7 @@ struct UploadService {
             fields.append(("participants", jsonString))
         }
         
-        // 3. Tentatives avec retry
-        var lastError: UploadError?
-        
-        for attempt in 1...Self.maxRetries {
-            do {
-                try await performUpload(
-                    webhookURL: webhookURL,
-                    audioFileURL: fileURL,
-                    fields: fields
-                )
-                
-                if attempt > 1 {
-                    print("🎙️ ✅ Upload réussi à la tentative \(attempt)")
-                } else {
-                    print("🎙️ ✅ Upload réussi")
-                }
-                return
-                
-            } catch let error as UploadError {
-                lastError = error
-                print("🎙️ ⚠️ Tentative \(attempt)/\(Self.maxRetries) échouée: \(error.localizedDescription ?? "unknown")")
-                
-                guard error.isRetryable, attempt < Self.maxRetries else { break }
-                
-                let delay = Self.retryDelays[min(attempt - 1, Self.retryDelays.count - 1)]
-                print("🎙️ ⏳ Retry dans \(delay / 1_000_000_000)s...")
-                try? await Task.sleep(nanoseconds: delay)
-                
-            } catch {
-                let nsError = error as NSError
-                lastError = .networkError("\(nsError.localizedDescription) (code \(nsError.code))")
-                print("🎙️ ⚠️ Tentative \(attempt)/\(Self.maxRetries) - Erreur réseau: \(error.localizedDescription)")
-                
-                guard attempt < Self.maxRetries else { break }
-                
-                let delay = Self.retryDelays[min(attempt - 1, Self.retryDelays.count - 1)]
-                print("🎙️ ⏳ Retry dans \(delay / 1_000_000_000)s...")
-                try? await Task.sleep(nanoseconds: delay)
-            }
-        }
-        
-        throw UploadError.allRetriesFailed(lastError?.localizedDescription ?? "Erreur inconnue")
+        try await uploadWithRetry(webhookURL: webhookURL, audioFileURL: fileURL, fields: fields)
     }
     
     /// Upload avec des métadonnées brutes (pour recovery depuis UserDefaults)
@@ -168,33 +120,65 @@ struct UploadService {
             ("source", "taskflow-mac")
         ]
         
-        var lastError: UploadError?
-        
-        for attempt in 1...Self.maxRetries {
-            do {
-                try await performUpload(webhookURL: webhookURL, audioFileURL: fileURL, fields: fields)
-                print("🎙️ ✅ Upload recovery réussi (tentative \(attempt))")
-                return
-            } catch let error as UploadError {
-                lastError = error
-                guard error.isRetryable, attempt < Self.maxRetries else { break }
-                let delay = Self.retryDelays[min(attempt - 1, Self.retryDelays.count - 1)]
-                try? await Task.sleep(nanoseconds: delay)
-            } catch {
-                lastError = .networkError(error.localizedDescription)
-                guard attempt < Self.maxRetries else { break }
-                let delay = Self.retryDelays[min(attempt - 1, Self.retryDelays.count - 1)]
-                try? await Task.sleep(nanoseconds: delay)
-            }
-        }
-        
-        throw UploadError.allRetriesFailed(lastError?.localizedDescription ?? "Erreur inconnue")
+        try await uploadWithRetry(webhookURL: webhookURL, audioFileURL: fileURL, fields: fields)
     }
     
     /// Supprime le fichier audio local
     func cleanupFile(at url: URL) {
         try? FileManager.default.removeItem(at: url)
-        print("🎙️ 🗑️ Fichier audio supprimé: \(url.lastPathComponent)")
+        print("\u{1f399}\u{fe0f} \u{1f5d1}\u{fe0f} Fichier audio supprimé: \(url.lastPathComponent)")
+    }
+    
+    // MARK: - Retry Logic (factorisé)
+    
+    /// Tente l'upload avec retry automatique (backoff exponentiel).
+    /// Logique de retry partagée entre uploadAudio et uploadRecoveredAudio.
+    private func uploadWithRetry(
+        webhookURL: URL,
+        audioFileURL: URL,
+        fields: [(String, String)]
+    ) async throws {
+        var lastError: UploadError?
+        
+        for attempt in 1...Self.maxRetries {
+            do {
+                try await performUpload(
+                    webhookURL: webhookURL,
+                    audioFileURL: audioFileURL,
+                    fields: fields
+                )
+                
+                if attempt > 1 {
+                    print("\u{1f399}\u{fe0f} \u{2705} Upload réussi \u00e0 la tentative \(attempt)")
+                } else {
+                    print("\u{1f399}\u{fe0f} \u{2705} Upload réussi")
+                }
+                return
+                
+            } catch let error as UploadError {
+                lastError = error
+                print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} Tentative \(attempt)/\(Self.maxRetries) \u00e9chou\u00e9e: \(error.localizedDescription ?? "unknown")")
+                
+                guard error.isRetryable, attempt < Self.maxRetries else { break }
+                
+                let delay = Self.retryDelays[min(attempt - 1, Self.retryDelays.count - 1)]
+                print("\u{1f399}\u{fe0f} \u{23f3} Retry dans \(delay / 1_000_000_000)s...")
+                try? await Task.sleep(nanoseconds: delay)
+                
+            } catch {
+                let nsError = error as NSError
+                lastError = .networkError("\(nsError.localizedDescription) (code \(nsError.code))")
+                print("\u{1f399}\u{fe0f} \u{26a0}\u{fe0f} Tentative \(attempt)/\(Self.maxRetries) - Erreur réseau: \(error.localizedDescription)")
+                
+                guard attempt < Self.maxRetries else { break }
+                
+                let delay = Self.retryDelays[min(attempt - 1, Self.retryDelays.count - 1)]
+                print("\u{1f399}\u{fe0f} \u{23f3} Retry dans \(delay / 1_000_000_000)s...")
+                try? await Task.sleep(nanoseconds: delay)
+            }
+        }
+        
+        throw UploadError.allRetriesFailed(lastError?.localizedDescription ?? "Erreur inconnue")
     }
     
     // MARK: - File Validation
@@ -216,7 +200,7 @@ struct UploadService {
         }
         
         let sizeMB = Double(fileSize) / 1_048_576
-        print("🎙️ 📁 Fichier audio validé: \(String(format: "%.1f", sizeMB)) MB")
+        print("\u{1f399}\u{fe0f} \u{1f4c1} Fichier audio validé: \(String(format: "%.1f", sizeMB)) MB")
     }
     
     // MARK: - Single Upload Attempt (streaming)
@@ -259,7 +243,7 @@ struct UploadService {
             throw UploadError.serverError(statusCode: httpResponse.statusCode, body: body)
         }
         
-        print("🎙️ ✅ Upload réussi (HTTP \(httpResponse.statusCode))")
+        print("\u{1f399}\u{fe0f} \u{2705} Upload réussi (HTTP \(httpResponse.statusCode))")
     }
     
     // MARK: - Multipart Body Builder (streaming)

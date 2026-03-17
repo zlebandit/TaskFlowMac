@@ -78,7 +78,7 @@ struct MenuBarPopover: View {
         }
         .frame(width: 380)
         .task {
-            await loadMeetingsIfNeeded()
+            await appState.syncMeetings()
         }
         .onAppear {
             appState.scanPendingUploads()
@@ -95,7 +95,7 @@ struct MenuBarPopover: View {
             Spacer()
             
             Button {
-                Task { await loadMeetings() }
+                Task { await appState.forceSyncMeetings() }
             } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.body)
@@ -152,8 +152,6 @@ struct MenuBarPopover: View {
                 Circle()
                     .fill(.red)
                     .frame(width: 8, height: 8)
-                    .opacity(pulseOpacity)
-                    .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulseOpacity)
             }
             
             VStack(alignment: .leading, spacing: 1) {
@@ -234,8 +232,6 @@ struct MenuBarPopover: View {
                 : Color.red.opacity(0.08)
         )
     }
-    
-    @State private var pulseOpacity: Double = 1.0
     
     // MARK: - Picking Section (sélection d'événement)
     
@@ -594,31 +590,5 @@ struct MenuBarPopover: View {
         }
         let raw = formatter.string(from: Date())
         return raw.prefix(1).uppercased() + raw.dropFirst()
-    }
-    
-    // MARK: - Data Loading
-    
-    private func loadMeetingsIfNeeded() async {
-        if let lastSync = appState.lastSyncDate,
-           Date().timeIntervalSince(lastSync) < Config.minSyncInterval {
-            return
-        }
-        await loadMeetings()
-    }
-    
-    private func loadMeetings() async {
-        appState.isLoading = true
-        defer { appState.isLoading = false }
-        
-        do {
-            let meetings = try await SyncService().fetchMeetings()
-            appState.meetings = meetings
-            appState.saveCacheToDisk()
-            appState.writeMeetingsJSONFile()
-            appState.lastSyncDate = Date()
-            print("\u{2705} Sync: \(meetings.count) réunions")
-        } catch {
-            print("\u{274c} Sync failed: \(error.localizedDescription)")
-        }
     }
 }

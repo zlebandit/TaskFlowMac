@@ -59,12 +59,12 @@ struct SettingsView: View {
             }
             
             Section("Permissions") {
-                Text("L'enregistrement audio système nécessite l'autorisation \"Enregistrement de l'écran\" dans Préférences Système > Confidentialité.")
+                Text("L'enregistrement audio nécessite l'autorisation \"Microphone\" dans Réglages Système > Confidentialité & sécurité.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 
-                Button("Ouvrir les préférences") {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                Button("Ouvrir les réglages") {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
                 }
             }
         }

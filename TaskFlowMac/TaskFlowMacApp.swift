@@ -17,6 +17,8 @@
 //    taskflowmac://meetings → écrit le JSON des réunions (pour Alfred)
 //
 //  Au lancement :
+//    - Enregistrement du URL Scheme handler (dès le .task, avant tout événement Alfred)
+//    - Sync des réunions du jour (pour que Alfred ait les meetings immédiatement)
 //    - Nettoyage des fichiers audio orphelins > 48h (protège les sidecars)
 //    - Migration UserDefaults → sidecar JSON (one-shot)
 //    - Auto-retry des fichiers assignés en attente d'upload
@@ -31,6 +33,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var urlSchemeHandler: URLSchemeHandler?
     
     func setup(appState: AppState) {
+        guard urlSchemeHandler == nil else { return }
         urlSchemeHandler = URLSchemeHandler(appState: appState)
     }
 }
@@ -51,11 +54,7 @@ struct TaskFlowMacApp: App {
             MenuBarPopover()
                 .environment(appState)
                 .onAppear {
-                    // Configurer le URL scheme handler au premier affichage
-                    if appDelegate.urlSchemeHandler == nil {
-                        appDelegate.setup(appState: appState)
-                    }
-                    // Scanner les fichiers en attente d'upload
+                    // Scanner les fichiers en attente d'upload à chaque ouverture
                     appState.scanPendingUploads()
                 }
         } label: {
@@ -97,8 +96,12 @@ struct TaskFlowMacApp: App {
             }
         }
         .task {
-            // Initialisation au lancement : migration + scan + auto-retry
+            // 1. URL Scheme handler (doit être enregistré avant tout événement Alfred)
+            appDelegate.setup(appState: appState)
+            // 2. Migration + scan + auto-retry des pending uploads
             appState.initializePendingUploads()
+            // 3. Sync des réunions du jour (pour que Alfred ait des meetings dès le lancement)
+            await appState.syncMeetings()
         }
     }
 }

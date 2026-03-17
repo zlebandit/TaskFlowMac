@@ -58,13 +58,10 @@ struct CalendarEvent: Codable, Identifiable {
     /// Plage horaire formatée (ex: "14h00 – 15h30")
     var timeRange: String {
         guard let start = startDate else { return Horaire ?? "" }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "fr_FR")
-        formatter.dateFormat = "H'h'mm"
         
-        var result = formatter.string(from: start)
+        var result = Self.timeFormatter.string(from: start)
         if let end = endDate {
-            result += " – " + formatter.string(from: end)
+            result += " \u{2013} " + Self.timeFormatter.string(from: end)
         }
         return result
     }
@@ -74,6 +71,16 @@ struct CalendarEvent: Codable, Identifiable {
         guard let participants, !participants.isEmpty else { return "" }
         return participants.map { $0.name }.joined(separator: ", ")
     }
+    
+    // MARK: - Static Formatters
+    
+    /// Formatter pour les heures (ex: "14h00") — créé une seule fois
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "fr_FR")
+        f.dateFormat = "H'h'mm"
+        return f
+    }()
     
     // MARK: - Date Parsing
     
