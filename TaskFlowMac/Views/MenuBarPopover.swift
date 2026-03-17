@@ -20,6 +20,7 @@ import SwiftUI
 
 struct MenuBarPopover: View {
     @Environment(AppState.self) private var appState
+    @State private var pulseOpacity: Double = 1.0
     
     var body: some View {
         VStack(spacing: 0) {
@@ -152,6 +153,13 @@ struct MenuBarPopover: View {
                 Circle()
                     .fill(.red)
                     .frame(width: 8, height: 8)
+                    .opacity(pulseOpacity)
+                    .onAppear {
+                        withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                            pulseOpacity = 0.3
+                        }
+                    }
+                    .onDisappear { pulseOpacity = 1.0 }
             }
             
             VStack(alignment: .leading, spacing: 1) {
@@ -491,6 +499,7 @@ struct MenuBarPopover: View {
                             Circle()
                                 .fill(appState.recordingPhase == .paused ? .orange : .red)
                                 .frame(width: 5, height: 5)
+                                .opacity(appState.recordingPhase == .paused ? 1.0 : pulseOpacity)
                             Text(appState.recordingPhase == .paused ? "PAUSE" : "REC")
                                 .font(.system(size: 8, weight: .bold, design: .monospaced))
                                 .foregroundStyle(appState.recordingPhase == .paused ? .orange : .red)
