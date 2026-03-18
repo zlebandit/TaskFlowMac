@@ -102,6 +102,20 @@ struct TaskFlowMacApp: App {
             appState.initializePendingUploads()
             // 3. Sync des réunions du jour (pour que Alfred ait des meetings dès le lancement)
             await appState.syncMeetings()
+            // 4. Timer de sync périodique en arrière-plan (toutes les 3 min)
+            //    Permet de détecter les réunions créées dans Notion sans ouvrir le popover
+            startPeriodicSync()
+        }
+    }
+    
+    // MARK: - Periodic Sync
+    
+    /// Lance un timer qui rafraîchit les réunions toutes les 3 minutes,
+    /// même si le popover est fermé. Garantit que le JSON Alfred et
+    /// appState.meetings restent à jour pour les commandes dr/fr.
+    private func startPeriodicSync() {
+        Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { _ in
+            Task { await appState.syncMeetings() }
         }
     }
 }
