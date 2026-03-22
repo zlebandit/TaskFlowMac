@@ -60,6 +60,8 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
     private(set) var outputURL: URL?
     private(set) var isCapturing = false
     private(set) var isPaused = false
+    /// Callback pour transmettre le niveau audio normalisé (0...1) à l'UI
+    var onAudioLevel: ((Float) -> Void)?
     private var sampleCount = 0
     private var totalFrameCount: Int64 = 0
     private var nonSilentBufferCount = 0
@@ -382,7 +384,7 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         
         let frameCount = Int64(buffer.frameLength)
         
-        // Diagnostic: vérifier si le buffer contient du vrai audio
+        // Diagnostic: vérifier si le buffer contient du vrai audio + niveau audio
         var isSilent = true
         if let channelData = buffer.floatChannelData {
             var maxAbs: Float = 0
@@ -392,6 +394,13 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
                 if absVal > maxAbs { maxAbs = absVal }
             }
             isSilent = maxAbs <= 0.001
+            
+            // Convertir en dB puis normaliser 0...1 (plage -60 dB à 0 dB)
+            let db: Float = maxAbs > 0.00001 ? 20 * log10(maxAbs) : -60
+            let normalized = max(0, min(1, (db + 60) / 60))
+            DispatchQueue.main.async { [weak self] in
+                self?.onAudioLevel?(normalized)
+            }
         }
         
         // Convertir AVAudioPCMBuffer → CMSampleBuffer pour AVAssetWriter
