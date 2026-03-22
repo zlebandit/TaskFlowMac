@@ -38,7 +38,9 @@ class RecordingManager {
     
     // MARK: - Pending Uploads (sidecar-based)
     
-    var pendingUploads: [PendingUploadInfo] = []
+    var pendingUploads: [PendingUploadInfo] {
+        PendingUploadManager.shared.pendingUploads
+    }
     var isRetryingPendingUpload = false
     
     // MARK: - Computed
@@ -142,7 +144,7 @@ class RecordingManager {
                         startDate: self.recordingStartDate ?? "",
                         endDate: self.recordingEndDate ?? ""
                     )
-                    PendingUploadManager.saveSidecar(for: fileURL, metadata: metadata)
+                    PendingUploadManager.shared.saveSidecar(for: fileURL, metadata: metadata)
                     
                     self.recordingPhase = .picking
                     print("[Rec] Fichier audio pret, en attente d'affectation: \(fileURL.lastPathComponent)")
@@ -184,7 +186,7 @@ class RecordingManager {
         recordingPhase = .uploading
         
         let participantsJSON = encodeParticipants(event: event)
-        PendingUploadManager.assignEvent(
+        PendingUploadManager.shared.assignEvent(
             for: fileURL,
             eventId: event.id,
             eventTitle: event.displayTitle,
@@ -201,7 +203,7 @@ class RecordingManager {
         guard recordingPhase == .picking else { return }
         
         if let fileURL = finalizedAudioURL {
-            PendingUploadManager.deletePending(audioURL: fileURL)
+            PendingUploadManager.shared.deletePending(audioURL: fileURL)
         }
         clearPersistedState()
         reset()
@@ -246,11 +248,11 @@ class RecordingManager {
     func scanPendingUploads() {
         guard !isRecording,
               recordingPhase == .idle || recordingPhase == .done else {
-            pendingUploads = []
+            PendingUploadManager.shared.pendingUploads = []
             return
         }
         
-        pendingUploads = PendingUploadManager.scanPendingUploads(
+        PendingUploadManager.shared.scanPendingUploads(
             activeFilePath: currentRecordingURL?.path
         )
     }
@@ -260,7 +262,7 @@ class RecordingManager {
         recordingStartDate = pending.metadata?.startDate
         recordingEndDate = pending.metadata?.endDate
         
-        pendingUploads = []
+        PendingUploadManager.shared.pendingUploads = []
         recordingPhase = .picking
     }
     
@@ -273,7 +275,7 @@ class RecordingManager {
         isRetryingPendingUpload = true
         
         Task { @MainActor in
-            let success = await PendingUploadManager.uploadPending(pending)
+            let success = await PendingUploadManager.shared.uploadPending(pending)
             self.isRetryingPendingUpload = false
             
             if success {
@@ -283,14 +285,13 @@ class RecordingManager {
     }
     
     func discardPendingUpload(_ pending: PendingUploadInfo) {
-        PendingUploadManager.deletePending(audioURL: pending.audioURL)
-        pendingUploads.removeAll { $0.id == pending.id }
+        PendingUploadManager.shared.deletePending(audioURL: pending.audioURL)
     }
     
     // MARK: - Initialization (appelé au lancement)
     
     func initializePendingUploads() {
-        PendingUploadManager.migrateFromUserDefaults()
+        PendingUploadManager.shared.migrateFromUserDefaults()
         scanPendingUploads()
         
         // Auto-retry des uploads pending quand le réseau revient
@@ -301,7 +302,7 @@ class RecordingManager {
                 print("[Rec] 🔄 Réseau rétabli — auto-retry de \(assignedPendings.count) upload(s) pending")
                 Task { @MainActor in
                     for pending in assignedPendings {
-                        let success = await PendingUploadManager.uploadPending(pending)
+                        let success = await PendingUploadManager.shared.uploadPending(pending)
                         if success {
                             print("[Rec] ✅ Auto-retry réseau réussi: \(pending.metadata?.eventTitle ?? pending.id)")
                         }
@@ -316,7 +317,7 @@ class RecordingManager {
             print("[Rec] \(assignedPendings.count) fichier(s) assigné(s) en attente d'upload")
             Task { @MainActor in
                 for pending in assignedPendings {
-                    let success = await PendingUploadManager.uploadPending(pending)
+                    let success = await PendingUploadManager.shared.uploadPending(pending)
                     if success {
                         print("[Rec] Auto-retry réussi: \(pending.metadata?.eventTitle ?? pending.id)")
                     }
@@ -344,7 +345,7 @@ class RecordingManager {
                     endDate: self.recordingEndDate ?? Config.isoFormatter.string(from: Date()),
                     participantsJSON: participantsJSON
                 )
-                PendingUploadManager.saveSidecar(for: fileURL, metadata: metadata)
+                PendingUploadManager.shared.saveSidecar(for: fileURL, metadata: metadata)
                 
                 let startDate = self.recordingStartDate ?? Config.isoFormatter.string(from: Date())
                 let endDate = self.recordingEndDate ?? Config.isoFormatter.string(from: Date())
@@ -356,7 +357,7 @@ class RecordingManager {
                 )
                 print("[Rec] Upload réussi")
                 
-                PendingUploadManager.deletePending(audioURL: fileURL)
+                PendingUploadManager.shared.deletePending(audioURL: fileURL)
                 clearPersistedState()
                 markDone()
                 
@@ -364,7 +365,7 @@ class RecordingManager {
                 print("[Rec] Erreur stop/upload: \(error.localizedDescription)")
                 
                 if let fileURL = self.audioCaptureService.outputURL ?? self.currentRecordingURL {
-                    PendingUploadManager.recordFailure(for: fileURL, error: error.localizedDescription)
+                    PendingUploadManager.shared.recordFailure(for: fileURL, error: error.localizedDescription)
                 }
                 clearPersistedState()
                 markError(error.localizedDescription)
@@ -385,14 +386,14 @@ class RecordingManager {
                 )
                 print("[Rec] Upload réussi pour: \(event.displayTitle)")
                 
-                PendingUploadManager.deletePending(audioURL: fileURL)
+                PendingUploadManager.shared.deletePending(audioURL: fileURL)
                 finalizedAudioURL = nil
                 clearPersistedState()
                 markDone()
                 
             } catch {
                 print("[Rec] Erreur upload: \(error.localizedDescription)")
-                PendingUploadManager.recordFailure(for: fileURL, error: error.localizedDescription)
+                PendingUploadManager.shared.recordFailure(for: fileURL, error: error.localizedDescription)
                 clearPersistedState()
                 markError(error.localizedDescription)
             }
@@ -503,7 +504,7 @@ class RecordingManager {
             endDate:          endDate,
             participantsJSON: participantsJSON
         )
-        PendingUploadManager.saveSidecar(for: audioURL, metadata: sidecarMetadata)
+        PendingUploadManager.shared.saveSidecar(for: audioURL, metadata: sidecarMetadata)
         
         if notionPageId.isEmpty {
             print("[Rec] Enregistrement libre récupéré -> phase picking")
@@ -544,14 +545,14 @@ class RecordingManager {
                     participantsJSON: recovered.participantsJSON
                 )
                 
-                PendingUploadManager.deletePending(audioURL: fileURL)
+                PendingUploadManager.shared.deletePending(audioURL: fileURL)
                 print("[Rec] Recovery upload réussi pour: \(recovered.eventTitle)")
                 markDone()
                 
             } catch {
                 print("[Rec] Recovery upload échoué: \(error.localizedDescription)")
                 let fileURL = URL(fileURLWithPath: recovered.audioFilePath)
-                PendingUploadManager.recordFailure(for: fileURL, error: error.localizedDescription)
+                PendingUploadManager.shared.recordFailure(for: fileURL, error: error.localizedDescription)
                 markError("Upload échoué : \(recovered.eventTitle). Le fichier reste en attente.")
             }
         }
@@ -559,7 +560,7 @@ class RecordingManager {
     
     func discardRecoveredRecording(_ recovered: RecoveredRecording) {
         let audioURL = URL(fileURLWithPath: recovered.audioFilePath)
-        PendingUploadManager.deletePending(audioURL: audioURL)
+        PendingUploadManager.shared.deletePending(audioURL: audioURL)
         print("[Rec] Enregistrement récupéré supprimé: \(recovered.eventTitle)")
     }
     

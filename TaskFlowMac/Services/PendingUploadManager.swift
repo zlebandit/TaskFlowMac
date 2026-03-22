@@ -6,21 +6,21 @@
 //  Pattern sidecar JSON : chaque fichier .m4a est accompagné d'un .json
 //  contenant les métadonnées nécessaires à l'upload.
 //
-//  Avantages par rapport à UserDefaults seul :
-//    - Supporte N fichiers en attente (pas seulement le dernier)
-//    - Les métadonnées survivent aux crashes, reinstalls, mises à jour
+//  @Observable class avec singleton shared :
+//    - pendingUploads est une propriété observable (SwiftUI auto-update)
+//    - Les mutations (save, delete, assign, failure) rafraîchissent la liste
 //    - Source de vérité = filesystem (pas de désync possible)
-//    - Nettoyage simple : supprimer le .m4a supprime aussi le .json
 //
 //  Flux :
 //    1. Enregistrement terminé → saveSidecar() crée le .json à côté du .m4a
 //    2. Upload réussi → deletePending() supprime .m4a + .json
 //    3. Upload échoué → recordFailure() incrémente le compteur dans le .json
-//    4. Au lancement → scanPendingUploads() scanne le dossier, lit les sidecars
+//    4. Au lancement → scanPendingUploads() scanne le dossier, met à jour pendingUploads
 //    5. Retry → uploadPending() retente l'upload avec les métadonnées du sidecar
 //
 
 import Foundation
+import Observation
 
 // MARK: - Upload Metadata (sidecar JSON)
 
@@ -107,22 +107,39 @@ struct PendingUploadInfo: Identifiable {
 
 // MARK: - PendingUploadManager
 
-struct PendingUploadManager {
+@Observable
+class PendingUploadManager {
     
-    private static let encoder: JSONEncoder = {
+    // MARK: - Singleton
+    
+    static let shared = PendingUploadManager()
+    
+    // MARK: - Observable State
+    
+    /// Liste des fichiers en attente d'upload, observable par SwiftUI.
+    var pendingUploads: [PendingUploadInfo] = []
+    
+    // MARK: - Private State
+    
+    /// Chemin du fichier en cours d'enregistrement (exclu du scan)
+    private var activeFilePath: String?
+    
+    private let encoder: JSONEncoder = {
         let e = JSONEncoder()
         e.outputFormatting = [.prettyPrinted, .sortedKeys]
         e.dateEncodingStrategy = .iso8601
         return e
     }()
     
-    private static let decoder: JSONDecoder = {
+    private let decoder: JSONDecoder = {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .iso8601
         return d
     }()
     
-    // MARK: - Sidecar Path
+    private init() {}
+    
+    // MARK: - Sidecar Path (static — pure function, utilisé aussi par AudioCaptureService)
     
     /// Retourne l'URL du sidecar JSON pour un fichier audio donné.
     /// recording_2026-03-08_14-30-00.m4a → recording_2026-03-08_14-30-00.json
@@ -134,12 +151,13 @@ struct PendingUploadManager {
     
     /// Crée ou met à jour le fichier sidecar JSON à côté du .m4a.
     @discardableResult
-    static func saveSidecar(for audioURL: URL, metadata: UploadMetadata) -> Bool {
-        let url = sidecarURL(for: audioURL)
+    func saveSidecar(for audioURL: URL, metadata: UploadMetadata) -> Bool {
+        let url = Self.sidecarURL(for: audioURL)
         do {
             let data = try encoder.encode(metadata)
             try data.write(to: url, options: .atomic)
             print("🎙️ 💾 Sidecar sauvé: \(url.lastPathComponent)")
+            refreshPendingUploads()
             return true
         } catch {
             print("🎙️ ❌ Erreur sauvegarde sidecar: \(error.localizedDescription)")
@@ -150,8 +168,8 @@ struct PendingUploadManager {
     // MARK: - Load Sidecar
     
     /// Lit les métadonnées depuis le fichier sidecar JSON.
-    static func loadSidecar(for audioURL: URL) -> UploadMetadata? {
-        let url = sidecarURL(for: audioURL)
+    func loadSidecar(for audioURL: URL) -> UploadMetadata? {
+        let url = Self.sidecarURL(for: audioURL)
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? decoder.decode(UploadMetadata.self, from: data)
     }
@@ -159,7 +177,7 @@ struct PendingUploadManager {
     // MARK: - Record Failure
     
     /// Incrémente le compteur d'échecs dans le sidecar après un upload raté.
-    static func recordFailure(for audioURL: URL, error: String) {
+    func recordFailure(for audioURL: URL, error: String) {
         var metadata = loadSidecar(for: audioURL) ?? UploadMetadata()
         metadata.failureCount += 1
         metadata.lastError = error
@@ -171,7 +189,7 @@ struct PendingUploadManager {
     // MARK: - Assign Event
     
     /// Met à jour le sidecar avec les informations d'un événement.
-    static func assignEvent(
+    func assignEvent(
         for audioURL: URL,
         eventId: String,
         eventTitle: String,
@@ -190,26 +208,35 @@ struct PendingUploadManager {
     // MARK: - Delete Pending
     
     /// Supprime le fichier audio ET son sidecar JSON.
-    static func deletePending(audioURL: URL) {
-        let sidecar = sidecarURL(for: audioURL)
+    func deletePending(audioURL: URL) {
+        let sidecar = Self.sidecarURL(for: audioURL)
         try? FileManager.default.removeItem(at: audioURL)
         try? FileManager.default.removeItem(at: sidecar)
         print("🎙️ 🗑️ Supprimé: \(audioURL.lastPathComponent) + sidecar")
+        refreshPendingUploads()
     }
     
     // MARK: - Scan Pending Uploads
     
-    /// Scanne le répertoire d'enregistrements et retourne tous les fichiers
-    /// .m4a en attente d'upload, enrichis par leurs sidecars.
+    /// Scanne le répertoire d'enregistrements et met à jour pendingUploads.
     /// Exclut le fichier en cours d'enregistrement (activeFilePath).
-    static func scanPendingUploads(activeFilePath: String? = nil) -> [PendingUploadInfo] {
+    func scanPendingUploads(activeFilePath: String? = nil) {
+        self.activeFilePath = activeFilePath
+        refreshPendingUploads()
+    }
+    
+    /// Rafraîchit la liste observable depuis le filesystem.
+    private func refreshPendingUploads() {
         let fm = FileManager.default
         let dir = Config.recordingsDirectory
         
         guard let files = try? fm.contentsOfDirectory(
             at: dir,
             includingPropertiesForKeys: [.fileSizeKey, .creationDateKey]
-        ) else { return [] }
+        ) else {
+            pendingUploads = []
+            return
+        }
         
         var results: [PendingUploadInfo] = []
         
@@ -225,7 +252,7 @@ struct PendingUploadManager {
             guard size > 10_240 else { continue }
             
             let creationDate = (attrs?[.creationDate] as? Date) ?? Date()
-            let sidecar = sidecarURL(for: file)
+            let sidecar = Self.sidecarURL(for: file)
             let metadata = loadSidecar(for: file)
             
             results.append(PendingUploadInfo(
@@ -239,13 +266,13 @@ struct PendingUploadManager {
         }
         
         // Trier par date (plus récent en premier)
-        return results.sorted { $0.fileDate > $1.fileDate }
+        pendingUploads = results.sorted { $0.fileDate > $1.fileDate }
     }
     
     // MARK: - Upload Pending
     
     /// Tente l'upload d'un fichier en attente. Retourne true si succès.
-    static func uploadPending(_ pending: PendingUploadInfo) async -> Bool {
+    func uploadPending(_ pending: PendingUploadInfo) async -> Bool {
         guard let metadata = pending.metadata, pending.isAssigned else {
             print("🎙️ ⚠️ Pas de métadonnées ou événement non assigné pour \(pending.id)")
             return false
@@ -281,7 +308,7 @@ struct PendingUploadManager {
     /// Migration one-shot : si des métadonnées existent dans UserDefaults
     /// mais pas de sidecar JSON, créer le sidecar.
     /// À appeler une seule fois au lancement.
-    static func migrateFromUserDefaults() {
+    func migrateFromUserDefaults() {
         let defaults = UserDefaults.standard
         
         guard defaults.bool(forKey: "recording.isActive"),
@@ -294,14 +321,14 @@ struct PendingUploadManager {
         // Vérifier que le fichier audio existe
         guard FileManager.default.fileExists(atPath: audioFilePath) else {
             print("🎙️ ⚠️ Migration: fichier audio disparu, nettoyage UserDefaults")
-            clearUserDefaults()
+            Self.clearUserDefaults()
             return
         }
         
         // Si un sidecar existe déjà, pas besoin de migrer
         if loadSidecar(for: audioURL) != nil {
             print("🎙️ ℹ️ Migration: sidecar déjà existant, skip")
-            clearUserDefaults()
+            Self.clearUserDefaults()
             return
         }
         
@@ -317,7 +344,7 @@ struct PendingUploadManager {
         
         if saveSidecar(for: audioURL, metadata: metadata) {
             print("🎙️ ✅ Migration UserDefaults → sidecar réussie: \(audioURL.lastPathComponent)")
-            clearUserDefaults()
+            Self.clearUserDefaults()
         }
     }
     
