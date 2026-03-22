@@ -43,13 +43,13 @@ class RecordingManager {
     // MARK: - Pending Uploads (sidecar-based)
     
     /// Mode de capture audio (micro seul ou micro + système)
-    var audioCaptureMode: AudioCaptureMode {
-        get {
-            let raw = UserDefaults.standard.string(forKey: "audioCaptureMode") ?? AudioCaptureMode.micOnly.rawValue
-            return AudioCaptureMode(rawValue: raw) ?? .micOnly
-        }
-        set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: "audioCaptureMode")
+    /// Stored property pour que @Observable détecte les changements et redessine la vue.
+    var audioCaptureMode: AudioCaptureMode = {
+        let raw = UserDefaults.standard.string(forKey: "audioCaptureMode") ?? AudioCaptureMode.micOnly.rawValue
+        return AudioCaptureMode(rawValue: raw) ?? .micOnly
+    }() {
+        didSet {
+            UserDefaults.standard.set(audioCaptureMode.rawValue, forKey: "audioCaptureMode")
         }
     }
     
