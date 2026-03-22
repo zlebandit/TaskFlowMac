@@ -143,7 +143,7 @@ struct MenuBarPopover: View {
             } label: {
                 Image(systemName: "desktopcomputer")
                     .font(.caption)
-                    .foregroundStyle(appState.audioCaptureMode == .micAndSystem ? .blue : .tertiary)
+                    .foregroundStyle(appState.audioCaptureMode == .micAndSystem ? Color.blue : Color.gray.opacity(0.5))
                     .padding(6)
                     .background(
                         appState.audioCaptureMode == .micAndSystem

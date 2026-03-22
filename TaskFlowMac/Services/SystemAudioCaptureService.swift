@@ -170,7 +170,7 @@ class SystemAudioCaptureService: NSObject, @unchecked Sendable {
 
 @available(macOS 13.0, *)
 extension SystemAudioCaptureService: SCStreamOutput {
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStream.OutputType) {
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio else { return }
         
         // Extraire les données audio du CMSampleBuffer

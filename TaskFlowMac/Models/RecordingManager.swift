@@ -17,6 +17,7 @@
 //
 
 import SwiftUI
+import AVFAudio
 import Observation
 
 @Observable
