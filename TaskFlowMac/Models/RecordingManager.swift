@@ -33,12 +33,24 @@ class RecordingManager {
     private var timer: Timer?
     private let audioCaptureService = AudioCaptureService()
     private let uploadService = UploadService()
+    private var systemAudioService: SystemAudioCaptureService?
     private var currentRecordingURL: URL?
     var finalizedAudioURL: URL?
     private var recordingStartDate: String?
     private var recordingEndDate: String?
     
     // MARK: - Pending Uploads (sidecar-based)
+    
+    /// Mode de capture audio (micro seul ou micro + système)
+    var audioCaptureMode: AudioCaptureMode {
+        get {
+            let raw = UserDefaults.standard.string(forKey: "audioCaptureMode") ?? AudioCaptureMode.micOnly.rawValue
+            return AudioCaptureMode(rawValue: raw) ?? .micOnly
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "audioCaptureMode")
+        }
+    }
     
     var pendingUploads: [PendingUploadInfo] {
         PendingUploadManager.shared.pendingUploads
@@ -91,9 +103,16 @@ class RecordingManager {
                 self.audioCaptureService.onAudioLevel = { [weak self] level in
                     self?.audioLevel = level
                 }
+                
+                // Démarrer l'audio système si mode hybride
+                if audioCaptureMode == .micAndSystem {
+                    await startSystemAudioCapture()
+                }
+                
                 UserDefaults.standard.set(fileURL.path, forKey: Self.kAudioFilePath)
+                let modeLabel = audioCaptureMode == .micAndSystem ? "micro+système" : "micro"
                 let label = event.map { $0.displayTitle } ?? "libre"
-                print("[Rec] Capture démarrée (\(label)) -> \(fileURL.lastPathComponent)")
+                print("[Rec] Capture démarrée (\(label), \(modeLabel)) -> \(fileURL.lastPathComponent)")
             } catch {
                 print("[Rec] Erreur démarrage capture: \(error.localizedDescription)")
                 recordingPhase = .error(error.localizedDescription)
@@ -107,6 +126,7 @@ class RecordingManager {
     func pauseRecording() {
         guard recordingPhase == .recording else { return }
         audioCaptureService.pauseCapture()
+        systemAudioService?.flush()
         recordingPhase = .paused
         stopTimer()
         print("[Rec] Enregistrement en pause")
@@ -116,6 +136,7 @@ class RecordingManager {
     func resumeRecording() {
         guard recordingPhase == .paused else { return }
         do {
+            systemAudioService?.flush()
             try audioCaptureService.resumeCapture()
             recordingPhase = .recording
             startTimer()
@@ -234,6 +255,7 @@ class RecordingManager {
         finalizedAudioURL = nil
         recordingStartDate = nil
         recordingEndDate = nil
+        systemAudioService = nil
         stopTimer()
         scanPendingUploads()
     }
@@ -242,6 +264,10 @@ class RecordingManager {
     func cancelRecording() {
         stopTimer()
         Task { @MainActor in
+            if let sysAudio = systemAudioService {
+                await sysAudio.stopCapture()
+                systemAudioService = nil
+            }
             await audioCaptureService.cancelCapture()
             clearPersistedState()
             reset()
@@ -575,6 +601,44 @@ class RecordingManager {
         print("[Rec] Enregistrement récupéré supprimé: \(recovered.eventTitle)")
     }
     
+    // MARK: - System Audio
+    
+    /// Démarre la capture audio système (ScreenCaptureKit) et l'injecte dans AudioCaptureService
+    private func startSystemAudioCapture() async {
+        guard let inputFormat = audioCaptureService.inputFormat else {
+            print("[Rec] ⚠️ Format micro non disponible, impossible de démarrer l'audio système")
+            return
+        }
+        
+        let sysService = SystemAudioCaptureService()
+        do {
+            try await sysService.startCapture(
+                sampleRate: inputFormat.sampleRate,
+                channelCount: Int(inputFormat.channelCount)
+            )
+            self.systemAudioService = sysService
+            self.audioCaptureService.systemAudioService = sysService
+            print("[Rec] 🔊 Audio système activé (hybride micro + système)")
+        } catch {
+            // Graceful fallback : on continue en mic-only
+            print("[Rec] ⚠️ Audio système indisponible, fallback mic-only: \(error.localizedDescription)")
+            self.systemAudioService = nil
+            self.audioCaptureService.systemAudioService = nil
+        }
+    }
+    
+    /// Bascule entre mode micro seul et micro + système
+    func toggleAudioCaptureMode() {
+        switch audioCaptureMode {
+        case .micOnly:
+            audioCaptureMode = .micAndSystem
+            print("[Rec] Mode audio → micro + système")
+        case .micAndSystem:
+            audioCaptureMode = .micOnly
+            print("[Rec] Mode audio → micro seul")
+        }
+    }
+    
     // MARK: - Timer
     
     private func startTimer() {
@@ -592,6 +656,13 @@ class RecordingManager {
 }
 
 // MARK: - Recording Phase
+
+// MARK: - Audio Capture Mode
+
+enum AudioCaptureMode: String, CaseIterable {
+    case micOnly = "micOnly"
+    case micAndSystem = "micAndSystem"
+}
 
 enum RecordingPhase: Equatable {
     case idle

@@ -111,30 +111,51 @@ struct MenuBarPopover: View {
     // MARK: - Free Record Button (idle)
     
     private var freeRecordButton: some View {
-        Button {
-            appState.startRecording()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "mic.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.red)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Enregistrer")
-                        .font(.subheadline.weight(.medium))
-                    Text("Démarrer un enregistrement libre")
+        HStack(spacing: 0) {
+            Button {
+                appState.startRecording()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "mic.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.red)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Enregistrer")
+                            .font(.subheadline.weight(.medium))
+                        Text("Démarrer un enregistrement libre")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.tertiary)
                 }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            
+            // Bouton toggle audio système
+            Button {
+                appState.toggleAudioCaptureMode()
+            } label: {
+                Image(systemName: "desktopcomputer")
+                    .font(.caption)
+                    .foregroundStyle(appState.audioCaptureMode == .micAndSystem ? .blue : .tertiary)
+                    .padding(6)
+                    .background(
+                        appState.audioCaptureMode == .micAndSystem
+                            ? Color.blue.opacity(0.1)
+                            : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 4)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help(appState.audioCaptureMode == .micAndSystem ? "Audio système activé" : "Capturer aussi l'audio système")
+            .padding(.trailing, 12)
         }
-        .buttonStyle(.plain)
     }
     
     // MARK: - Recording Banner

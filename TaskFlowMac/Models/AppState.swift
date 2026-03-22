@@ -180,6 +180,7 @@ class AppState {
     var isRetryingPendingUpload: Bool            { recording.isRetryingPendingUpload }
     var uploadProgress: Double                    { recording.uploadProgress }
     var audioLevel: Float                        { recording.audioLevel }
+    var audioCaptureMode: AudioCaptureMode        { recording.audioCaptureMode }
     var isRecording: Bool                        { recording.isRecording }
     var isPicking: Bool                          { recording.isPicking }
     var formattedDuration: String               { recording.formattedDuration }
@@ -199,6 +200,7 @@ class AppState {
     func discardPendingUpload(_ p: PendingUploadInfo)    { recording.discardPendingUpload(p) }
     func initializePendingUploads()                      { recording.initializePendingUploads() }
     func clearPersistedState()                           { recording.clearPersistedState() }
+    func toggleAudioCaptureMode()                         { recording.toggleAudioCaptureMode() }
     
     func checkForRecovery() -> RecoveredRecording?               { recording.checkForRecovery() }
     func retryRecoveredRecording(_ r: RecoveredRecording)        { recording.retryRecoveredRecording(r) }

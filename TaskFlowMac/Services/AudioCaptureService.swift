@@ -68,7 +68,10 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
     private var startTime: Date?
     private var pauseAccumulated: TimeInterval = 0
     private var pauseStartTime: Date?
-    private var inputFormat: AVAudioFormat?
+    private(set) var inputFormat: AVAudioFormat?
+    
+    /// Service de capture audio système (optionnel, nil en mode micOnly)
+    var systemAudioService: SystemAudioCaptureService?
     
     /// Lock pour protéger les compteurs accédés depuis le thread audio (handleAudioBuffer)
     private let counterLock = NSLock()
@@ -224,6 +227,7 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         // 3. Cleanup
         self.assetWriter = nil
         self.audioInput = nil
+        self.systemAudioService = nil
         
         guard let url = outputURL else {
             throw AudioCaptureError.writerFailed("No output URL")
@@ -252,6 +256,12 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         audioEngine = nil
         isCapturing = false
         isPaused = false
+        
+        // Arrêter l'audio système si actif
+        if let systemAudio = systemAudioService {
+            await systemAudio.stopCapture()
+            systemAudioService = nil
+        }
         
         audioInput?.markAsFinished()
         assetWriter?.cancelWriting()
@@ -458,6 +468,16 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
                 for ch in 0..<channels {
                     interleavedData[frame * channels + ch] = channelData[ch][frame]
                 }
+            }
+        }
+        
+        // Mixer l'audio système si disponible (mode hybride)
+        if let systemSamples = systemAudioService?.consumeSamples(count: interleavedCount) {
+            let systemVolume: Float = 0.8
+            let mixCount = min(interleavedCount, systemSamples.count)
+            for i in 0..<mixCount {
+                let mixed = interleavedData[i] + systemSamples[i] * systemVolume
+                interleavedData[i] = max(-1.0, min(1.0, mixed))
             }
         }
         
