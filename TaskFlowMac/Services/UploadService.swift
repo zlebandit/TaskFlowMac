@@ -13,6 +13,7 @@
 //    - Validation fichier avant upload (taille min 10 KB, max 500 MB)
 //    - Streaming par chunks de 1 Mo (pas de chargement intégral en RAM)
 //    - Distinction erreurs retryables vs non-retryables
+//    - Progression upload en % (bytes envoyés / total) via delegate URLSession
 //
 
 import Foundation
@@ -49,6 +50,29 @@ enum UploadError: LocalizedError {
     }
 }
 
+// MARK: - Upload Progress Delegate
+
+/// Delegate URLSession qui capture la progression de l'upload (bytes envoyés / total).
+/// Utilisé pour afficher un pourcentage dans la UI pendant l'envoi du fichier audio.
+final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate {
+    /// Callback appelé sur le main thread avec la fraction envoyée (0.0 → 1.0)
+    var onProgress: ((Double) -> Void)?
+    
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didSendBodyData bytesSent: Int64,
+        totalBytesSent: Int64,
+        totalBytesExpectedToSend: Int64
+    ) {
+        guard totalBytesExpectedToSend > 0 else { return }
+        let fraction = Double(totalBytesSent) / Double(totalBytesExpectedToSend)
+        DispatchQueue.main.async { [weak self] in
+            self?.onProgress?(fraction)
+        }
+    }
+}
+
 struct UploadService {
     
     // MARK: - Configuration
@@ -66,7 +90,14 @@ struct UploadService {
     // MARK: - Upload with Retry
     
     /// Upload le fichier audio vers n8n pour transcription, avec retry automatique.
-    func uploadAudio(fileURL: URL, event: CalendarEvent, recordingStartDate: String, recordingEndDate: String) async throws {
+    /// - Parameter onProgress: Callback progression (0.0 → 1.0), appelé sur le main thread.
+    func uploadAudio(
+        fileURL: URL,
+        event: CalendarEvent,
+        recordingStartDate: String,
+        recordingEndDate: String,
+        onProgress: ((Double) -> Void)? = nil
+    ) async throws {
         try validateAudioFile(at: fileURL)
         
         guard let webhookURL = URL(string: Config.transcribeURL) else {
@@ -88,7 +119,7 @@ struct UploadService {
             fields.append(("participants", jsonString))
         }
         
-        try await uploadWithRetry(webhookURL: webhookURL, audioFileURL: fileURL, fields: fields)
+        try await uploadWithRetry(webhookURL: webhookURL, audioFileURL: fileURL, fields: fields, onProgress: onProgress)
     }
     
     /// Upload avec des métadonnées brutes (pour recovery depuis UserDefaults)
@@ -99,7 +130,8 @@ struct UploadService {
         eventDate: String,
         startDate: String,
         endDate: String,
-        participantsJSON: String
+        participantsJSON: String,
+        onProgress: ((Double) -> Void)? = nil
     ) async throws {
         try validateAudioFile(at: fileURL)
         
@@ -117,7 +149,7 @@ struct UploadService {
             ("source", "taskflow-mac")
         ]
         
-        try await uploadWithRetry(webhookURL: webhookURL, audioFileURL: fileURL, fields: fields)
+        try await uploadWithRetry(webhookURL: webhookURL, audioFileURL: fileURL, fields: fields, onProgress: onProgress)
     }
     
     /// Supprime le fichier audio local
@@ -133,16 +165,21 @@ struct UploadService {
     private func uploadWithRetry(
         webhookURL: URL,
         audioFileURL: URL,
-        fields: [(String, String)]
+        fields: [(String, String)],
+        onProgress: ((Double) -> Void)?
     ) async throws {
         var lastError: UploadError?
         
         for attempt in 1...Self.maxRetries {
             do {
+                // Reset progression à 0 au début de chaque tentative
+                await MainActor.run { onProgress?(0) }
+                
                 try await performUpload(
                     webhookURL: webhookURL,
                     audioFileURL: audioFileURL,
-                    fields: fields
+                    fields: fields,
+                    onProgress: onProgress
                 )
                 
                 if attempt > 1 {
@@ -200,12 +237,13 @@ struct UploadService {
         print("[Upload] Fichier audio valid\u{00e9}: \(String(format: "%.1f", sizeMB)) MB")
     }
     
-    // MARK: - Single Upload Attempt (streaming)
+    // MARK: - Single Upload Attempt (streaming + progress)
     
     private func performUpload(
         webhookURL: URL,
         audioFileURL: URL,
-        fields: [(String, String)]
+        fields: [(String, String)],
+        onProgress: ((Double) -> Void)?
     ) async throws {
         let boundary = "Boundary-\(UUID().uuidString)"
         
@@ -239,7 +277,14 @@ struct UploadService {
         }
         print("[Upload] Body multipart validé: \(bodySize) octets (audio: \(audioSize) octets)")
         
-        let (responseData, response) = try await URLSession.shared.upload(for: request, fromFile: tempBodyURL)
+        // Upload avec delegate pour la progression
+        let delegate = UploadProgressDelegate()
+        delegate.onProgress = onProgress
+        
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        
+        let (responseData, response) = try await session.upload(for: request, fromFile: tempBodyURL)
         
         guard let httpResponse = response as? HTTPURLResponse else {
             throw UploadError.networkError("R\u{00e9}ponse HTTP invalide")
@@ -250,6 +295,8 @@ struct UploadService {
             throw UploadError.serverError(statusCode: httpResponse.statusCode, body: body)
         }
         
+        // Marquer 100% à la fin
+        await MainActor.run { onProgress?(1.0) }
         print("[Upload] Upload r\u{00e9}ussi (HTTP \(httpResponse.statusCode))")
     }
     

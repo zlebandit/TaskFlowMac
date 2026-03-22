@@ -143,8 +143,9 @@ struct MenuBarPopover: View {
         HStack(spacing: 10) {
             // Indicateur visuel
             if appState.recordingPhase == .uploading {
-                ProgressView()
-                    .controlSize(.small)
+                ProgressView(value: appState.uploadProgress)
+                    .progressViewStyle(.linear)
+                    .frame(width: 40)
             } else if appState.recordingPhase == .paused {
                 Image(systemName: "pause.circle.fill")
                     .foregroundStyle(.orange)
@@ -164,8 +165,9 @@ struct MenuBarPopover: View {
             
             VStack(alignment: .leading, spacing: 1) {
                 if appState.recordingPhase == .uploading {
-                    Text("Envoi pour transcription...")
+                    Text("Envoi \(Int(appState.uploadProgress * 100))%")
                         .font(.subheadline.weight(.medium))
+                        .monospacedDigit()
                         .lineLimit(1)
                 } else {
                     HStack(spacing: 6) {

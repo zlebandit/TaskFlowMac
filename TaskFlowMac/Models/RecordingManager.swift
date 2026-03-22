@@ -27,6 +27,7 @@ class RecordingManager {
     var recordingPhase: RecordingPhase = .idle
     var recordingEvent: CalendarEvent?
     var elapsedSeconds: Int = 0
+    var uploadProgress: Double = 0
     
     private var timer: Timer?
     private let audioCaptureService = AudioCaptureService()
@@ -349,11 +350,13 @@ class RecordingManager {
                 
                 let startDate = self.recordingStartDate ?? Config.isoFormatter.string(from: Date())
                 let endDate = self.recordingEndDate ?? Config.isoFormatter.string(from: Date())
+                self.uploadProgress = 0
                 try await uploadService.uploadAudio(
                     fileURL: fileURL,
                     event: event,
                     recordingStartDate: startDate,
-                    recordingEndDate: endDate
+                    recordingEndDate: endDate,
+                    onProgress: { fraction in self.uploadProgress = fraction }
                 )
                 print("[Rec] Upload réussi")
                 
@@ -378,11 +381,13 @@ class RecordingManager {
             do {
                 let startDate = self.recordingStartDate ?? Config.isoFormatter.string(from: Date())
                 let endDate = self.recordingEndDate ?? Config.isoFormatter.string(from: Date())
+                self.uploadProgress = 0
                 try await uploadService.uploadAudio(
                     fileURL: fileURL,
                     event: event,
                     recordingStartDate: startDate,
-                    recordingEndDate: endDate
+                    recordingEndDate: endDate,
+                    onProgress: { fraction in self.uploadProgress = fraction }
                 )
                 print("[Rec] Upload réussi pour: \(event.displayTitle)")
                 
@@ -535,6 +540,7 @@ class RecordingManager {
         Task { @MainActor in
             do {
                 let fileURL = URL(fileURLWithPath: recovered.audioFilePath)
+                self.uploadProgress = 0
                 try await uploadService.uploadRecoveredAudio(
                     fileURL:          fileURL,
                     eventTitle:       recovered.eventTitle,
@@ -542,7 +548,8 @@ class RecordingManager {
                     eventDate:        eventDate,
                     startDate:        recovered.startDate,
                     endDate:          recovered.endDate,
-                    participantsJSON: recovered.participantsJSON
+                    participantsJSON: recovered.participantsJSON,
+                    onProgress: { fraction in self.uploadProgress = fraction }
                 )
                 
                 PendingUploadManager.shared.deletePending(audioURL: fileURL)
