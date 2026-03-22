@@ -178,7 +178,8 @@ class AppState {
     var finalizedAudioURL: URL?                 { recording.finalizedAudioURL }
     var pendingUploads: [PendingUploadInfo]      { recording.pendingUploads }
     var isRetryingPendingUpload: Bool            { recording.isRetryingPendingUpload }
-    var uploadProgress: Double                    { recording.uploadProgress }    var audioLevel: Float                        { recording.audioLevel }
+    var uploadProgress: Double                    { recording.uploadProgress }
+    var audioLevel: Float                        { recording.audioLevel }
     var isRecording: Bool                        { recording.isRecording }
     var isPicking: Bool                          { recording.isPicking }
     var formattedDuration: String               { recording.formattedDuration }

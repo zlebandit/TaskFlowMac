@@ -27,7 +27,8 @@ class RecordingManager {
     var recordingPhase: RecordingPhase = .idle
     var recordingEvent: CalendarEvent?
     var elapsedSeconds: Int = 0
-    var uploadProgress: Double = 0    var audioLevel: Float = 0
+    var uploadProgress: Double = 0
+    var audioLevel: Float = 0
     
     private var timer: Timer?
     private let audioCaptureService = AudioCaptureService()
@@ -86,7 +87,8 @@ class RecordingManager {
         Task { @MainActor in
             do {
                 let fileURL = try await audioCaptureService.startCapture()
-                currentRecordingURL = fileURL                self.audioCaptureService.onAudioLevel = { [weak self] level in
+                currentRecordingURL = fileURL
+                self.audioCaptureService.onAudioLevel = { [weak self] level in
                     self?.audioLevel = level
                 }
                 UserDefaults.standard.set(fileURL.path, forKey: Self.kAudioFilePath)
