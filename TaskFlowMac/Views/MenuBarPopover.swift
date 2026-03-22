@@ -366,13 +366,17 @@ struct MenuBarPopover: View {
             Spacer()
             Button {
                 appState.reset()
+                // Scan + auto-retry du premier pending assigné
+                if let pending = appState.pendingUploads.first(where: { $0.isAssigned }) {
+                    appState.retryPendingUpload(pending)
+                }
             } label: {
                 Image(systemName: "arrow.clockwise.circle.fill")
                     .font(.title3)
                     .foregroundStyle(.blue)
             }
             .buttonStyle(.plain)
-            .help("Réessayer")
+            .help("Réessayer l'envoi")
             
             Button {
                 appState.reset()

@@ -73,13 +73,10 @@ struct UploadService {
             throw UploadError.invalidURL
         }
         
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd"
-        
         var fields: [(String, String)] = [
             ("eventTitle", event.displayTitle),
             ("notionPageId", event.notionPageId),
-            ("eventDate", dateFormatter.string(from: Date())),
+            ("eventDate", Config.dayFormatter.string(from: Date())),
             ("startDate", recordingStartDate),
             ("endDate", recordingEndDate),
             ("source", "taskflow-mac")

@@ -311,7 +311,7 @@ struct PendingUploadManager {
             eventTitle: defaults.string(forKey: "recording.eventTitle") ?? "Enregistrement libre",
             notionPageId: defaults.string(forKey: "recording.notionPageId") ?? "",
             startDate: defaults.string(forKey: "recording.startDate") ?? "",
-            endDate: defaults.string(forKey: "recording.endDate") ?? ISO8601DateFormatter().string(from: Date()),
+            endDate: defaults.string(forKey: "recording.endDate") ?? Config.isoFormatter.string(from: Date()),
             participantsJSON: defaults.string(forKey: "recording.participantsJSON") ?? "[]"
         )
         

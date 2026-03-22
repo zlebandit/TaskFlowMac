@@ -22,6 +22,19 @@ enum Config {
     
     /// URL Scheme pour pilotage externe (Alfred, raccourcis clavier)
     static let urlScheme = "taskflowmac"
+    /// ISO8601DateFormatter partagé (évite de recréer l'objet à chaque appel)
+    static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+    
+    /// DateFormatter yyyy-MM-dd partagé
+    static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
     
     /// Dossier de stockage des enregistrements temporaires
     static var recordingsDirectory: URL {

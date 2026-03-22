@@ -68,6 +68,9 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
     private var pauseStartTime: Date?
     private var inputFormat: AVAudioFormat?
     
+    /// Lock pour protéger les compteurs accédés depuis le thread audio (handleAudioBuffer)
+    private let counterLock = NSLock()
+    
     // MARK: - Public API
     
     /// Démarre la capture audio microphone et l'écriture en fichier M4A.
@@ -378,9 +381,9 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         }
         
         let frameCount = Int64(buffer.frameLength)
-        totalFrameCount += frameCount
         
         // Diagnostic: vérifier si le buffer contient du vrai audio
+        var isSilent = true
         if let channelData = buffer.floatChannelData {
             var maxAbs: Float = 0
             let count = Int(buffer.frameLength)
@@ -388,9 +391,7 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
                 let absVal = abs(channelData[0][i])
                 if absVal > maxAbs { maxAbs = absVal }
             }
-            if maxAbs > 0.001 {
-                nonSilentBufferCount += 1
-            }
+            isSilent = maxAbs <= 0.001
         }
         
         // Convertir AVAudioPCMBuffer → CMSampleBuffer pour AVAssetWriter
@@ -399,10 +400,18 @@ class AudioCaptureService: NSObject, @unchecked Sendable {
         }
         
         if input.append(sampleBuffer) {
+            // Protéger les compteurs partagés avec le thread principal
+            counterLock.lock()
+            totalFrameCount += frameCount
             sampleCount += 1
-            if sampleCount % 500 == 0 {
+            if !isSilent { nonSilentBufferCount += 1 }
+            let currentSampleCount = sampleCount
+            let currentNonSilent = nonSilentBufferCount
+            counterLock.unlock()
+            
+            if currentSampleCount % 500 == 0 {
                 let elapsed = effectiveRecordingDuration
-                print("🎙️ 📝 \(sampleCount) buffers (~\(Int(elapsed))s effectifs) — non-silence: \(nonSilentBufferCount)/\(sampleCount)")
+                print("🎙️ 📝 \(currentSampleCount) buffers (~\(Int(elapsed))s effectifs) — non-silence: \(currentNonSilent)/\(currentSampleCount)")
             }
         }
     }

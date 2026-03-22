@@ -73,7 +73,7 @@ class RecordingManager {
         recordingEvent = event
         recordingPhase = .recording
         elapsedSeconds = 0
-        recordingStartDate = ISO8601DateFormatter().string(from: Date())
+        recordingStartDate = Config.isoFormatter.string(from: Date())
         recordingEndDate = nil
         finalizedAudioURL = nil
         startTimer()
@@ -124,7 +124,7 @@ class RecordingManager {
     /// - Sinon → passe en phase .picking (sélection d'événement)
     func stopRecording() {
         stopTimer()
-        recordingEndDate = ISO8601DateFormatter().string(from: Date())
+        recordingEndDate = Config.isoFormatter.string(from: Date())
         UserDefaults.standard.set(recordingEndDate, forKey: Self.kEndDate)
         
         if let event = recordingEvent {
@@ -164,7 +164,7 @@ class RecordingManager {
         }
         
         stopTimer()
-        recordingEndDate = ISO8601DateFormatter().string(from: Date())
+        recordingEndDate = Config.isoFormatter.string(from: Date())
         UserDefaults.standard.set(recordingEndDate, forKey: Self.kEndDate)
         
         recordingEvent = event
@@ -322,14 +322,14 @@ class RecordingManager {
                     eventId: event.id,
                     eventTitle: event.displayTitle,
                     notionPageId: event.notionPageId,
-                    startDate: self.recordingStartDate ?? ISO8601DateFormatter().string(from: Date()),
-                    endDate: self.recordingEndDate ?? ISO8601DateFormatter().string(from: Date()),
+                    startDate: self.recordingStartDate ?? Config.isoFormatter.string(from: Date()),
+                    endDate: self.recordingEndDate ?? Config.isoFormatter.string(from: Date()),
                     participantsJSON: participantsJSON
                 )
                 PendingUploadManager.saveSidecar(for: fileURL, metadata: metadata)
                 
-                let startDate = self.recordingStartDate ?? ISO8601DateFormatter().string(from: Date())
-                let endDate = self.recordingEndDate ?? ISO8601DateFormatter().string(from: Date())
+                let startDate = self.recordingStartDate ?? Config.isoFormatter.string(from: Date())
+                let endDate = self.recordingEndDate ?? Config.isoFormatter.string(from: Date())
                 try await uploadService.uploadAudio(
                     fileURL: fileURL,
                     event: event,
@@ -357,8 +357,8 @@ class RecordingManager {
     private func uploadFinalizedFile(fileURL: URL, event: CalendarEvent) {
         Task { @MainActor in
             do {
-                let startDate = self.recordingStartDate ?? ISO8601DateFormatter().string(from: Date())
-                let endDate = self.recordingEndDate ?? ISO8601DateFormatter().string(from: Date())
+                let startDate = self.recordingStartDate ?? Config.isoFormatter.string(from: Date())
+                let endDate = self.recordingEndDate ?? Config.isoFormatter.string(from: Date())
                 try await uploadService.uploadAudio(
                     fileURL: fileURL,
                     event: event,
@@ -457,7 +457,7 @@ class RecordingManager {
         }
         
         let notionPageId   = defaults.string(forKey: Self.kNotionPageId) ?? ""
-        let endDate        = defaults.string(forKey: Self.kEndDate) ?? ISO8601DateFormatter().string(from: Date())
+        let endDate        = defaults.string(forKey: Self.kEndDate) ?? Config.isoFormatter.string(from: Date())
         let participantsJSON = defaults.string(forKey: Self.kParticipantsJSON) ?? "[]"
         
         guard FileManager.default.fileExists(atPath: audioFilePath) else {
@@ -511,9 +511,7 @@ class RecordingManager {
     func retryRecoveredRecording(_ recovered: RecoveredRecording) {
         recordingPhase = .uploading
         
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd"
-        let eventDate = dateFormatter.string(from: Date())
+        let eventDate = Config.dayFormatter.string(from: Date())
         
         Task { @MainActor in
             do {
