@@ -293,6 +293,24 @@ class RecordingManager {
         PendingUploadManager.migrateFromUserDefaults()
         scanPendingUploads()
         
+        // Auto-retry des uploads pending quand le réseau revient
+        NetworkMonitor.shared.onNetworkRestored = { [weak self] in
+            guard let self else { return }
+            let assignedPendings = self.pendingUploads.filter { $0.isAssigned }
+            if !assignedPendings.isEmpty {
+                print("[Rec] 🔄 Réseau rétabli — auto-retry de \(assignedPendings.count) upload(s) pending")
+                Task { @MainActor in
+                    for pending in assignedPendings {
+                        let success = await PendingUploadManager.uploadPending(pending)
+                        if success {
+                            print("[Rec] ✅ Auto-retry réseau réussi: \(pending.metadata?.eventTitle ?? pending.id)")
+                        }
+                    }
+                    self.scanPendingUploads()
+                }
+            }
+        }
+        
         let assignedPendings = pendingUploads.filter { $0.isAssigned }
         if !assignedPendings.isEmpty {
             print("[Rec] \(assignedPendings.count) fichier(s) assigné(s) en attente d'upload")

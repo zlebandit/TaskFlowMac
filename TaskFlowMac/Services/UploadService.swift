@@ -228,6 +228,16 @@ struct UploadService {
             audioFileURL: audioFileURL,
             fields: fields
         )
+        // Body size sanity check (cohérence avec iPhone/Watch)
+        let bodyAttrs = try? FileManager.default.attributesOfItem(atPath: tempBodyURL.path)
+        let bodySize = bodyAttrs?[.size] as? Int ?? 0
+        let audioAttrs = try? FileManager.default.attributesOfItem(atPath: audioFileURL.path)
+        let audioSize = audioAttrs?[.size] as? Int ?? 0
+        if bodySize <= audioSize {
+            print("[Upload] ⚠️ Body multipart (\(bodySize) octets) <= audio (\(audioSize) octets) — fichier potentiellement corrompu")
+            throw UploadError.networkError("Body multipart corrompu (\(bodySize) <= \(audioSize))")
+        }
+        print("[Upload] Body multipart validé: \(bodySize) octets (audio: \(audioSize) octets)")
         
         let (responseData, response) = try await URLSession.shared.upload(for: request, fromFile: tempBodyURL)
         
